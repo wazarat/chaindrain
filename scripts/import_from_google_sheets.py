@@ -48,12 +48,37 @@ DATA_DIR = REPO_ROOT / "data" / "companies"
 
 SLUG_RE = re.compile(r"[^a-z0-9]+")
 
-NAME_COLS = ("name", "project", "company", "protocol")
-SLUG_COLS = ("slug",)
+NAME_COLS = ("name", "entity", "coin", "project", "company", "protocol", "asset")
+SLUG_COLS = ("slug", "ticker", "symbol")
 WEBSITE_COLS = ("website", "url", "site", "homepage")
-CHAINS_COLS = ("chains", "chain", "network", "networks")
-TAGS_COLS = ("tags", "tag", "category", "categories")
-DESCRIPTION_COLS = ("description", "summary", "notes", "about")
+CHAINS_COLS = (
+    "chains",
+    "chain",
+    "primary networks",
+    "supported networks",
+    "network",
+    "networks",
+    "underlying rollup base",
+)
+TAGS_COLS = (
+    "tags",
+    "tag",
+    "category",
+    "categories",
+    "entity type",
+    "type of framework",
+    "client category",
+)
+DESCRIPTION_COLS = (
+    "description",
+    "summary",
+    "notes",
+    "about",
+    "reason for inclusion",
+    "reason of inclusion",
+    "practitioner's note",
+    "practictioners note",
+)
 
 
 def slugify(text: str) -> str:
