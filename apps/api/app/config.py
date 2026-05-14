@@ -22,8 +22,11 @@ class Settings(BaseSettings):
     # Supabase
     supabase_url: str = Field(alias="SUPABASE_URL")
     supabase_anon_key: str = Field(alias="SUPABASE_ANON_KEY")
-    supabase_service_role_key: str = Field(alias="SUPABASE_SERVICE_ROLE_KEY")
-    supabase_jwks_url: str = Field(alias="SUPABASE_JWKS_URL")
+    # service_role is only required for admin/agent routes; default empty so the
+    # API boots in dev without it (admin calls will fail loudly when invoked).
+    supabase_service_role_key: str = Field(default="", alias="SUPABASE_SERVICE_ROLE_KEY")
+    # JWKS URL is derived from supabase_url if not explicitly set.
+    supabase_jwks_url: str = Field(default="", alias="SUPABASE_JWKS_URL")
     supabase_jwt_aud: str = Field(default="authenticated", alias="SUPABASE_JWT_AUD")
 
     # CORS
@@ -42,6 +45,12 @@ class Settings(BaseSettings):
     @property
     def cors_origins(self) -> list[str]:
         return [o.strip() for o in self.allowed_origins.split(",") if o.strip()]
+
+    @property
+    def jwks_url(self) -> str:
+        if self.supabase_jwks_url:
+            return self.supabase_jwks_url
+        return f"{self.supabase_url.rstrip('/')}/auth/v1/.well-known/jwks.json"
 
 
 @lru_cache(maxsize=1)

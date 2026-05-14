@@ -28,7 +28,7 @@ from app.services.events_service import (
     fetch_event_relations,
     require_admin,
 )
-from app.supabase_client import admin_client
+from app.supabase_client import admin_client, public_client
 
 router = APIRouter(tags=["events"])
 
@@ -52,7 +52,7 @@ async def list_events(
     limit: int = Query(default=50, le=200),
     cursor: str | None = Query(default=None, description="ISO timestamp cursor (detected_at)"),
 ) -> Page[Event]:
-    client = admin_client()
+    client = public_client()
     query = (
         client.table("events")
         .select("*")
@@ -108,7 +108,7 @@ async def list_events(
 
 @router.get("/events/{event_id}", response_model=EventWithRelations)
 async def get_event(event_id: str) -> EventWithRelations:
-    client = admin_client()
+    client = public_client()
     res = client.table("events").select("*").eq("id", event_id).limit(1).execute()
     rows = res.data or []
     if not rows:

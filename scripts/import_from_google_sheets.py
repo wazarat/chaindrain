@@ -209,26 +209,31 @@ def upsert_to_supabase(rows: list[dict[str, Any]], supabase_url: str, service_ro
                 sub_index[(sec_slug, sub["slug"])] = sub["id"]
                 break
 
-    payload: list[dict[str, Any]] = []
+    # Deduplicate by slug, last-wins (matches the "last sheet wins" intent).
+    # Postgres ON CONFLICT DO UPDATE rejects duplicate slugs in the same INSERT.
+    by_slug: dict[str, dict[str, Any]] = {}
     skipped = 0
     for r in rows:
         sub_id = sub_index.get((r["_sector_slug"], r["_subsector_slug"]))
         if not sub_id:
             skipped += 1
             continue
-        payload.append(
-            {
-                "slug": r["slug"],
-                "name": r["name"],
-                "subsector_id": sub_id,
-                "website": r["website"],
-                "chains": r["chains"],
-                "tags": r["tags"],
-                "meta": r["meta"],
-            }
-        )
+        by_slug[r["slug"]] = {
+            "slug": r["slug"],
+            "name": r["name"],
+            "subsector_id": sub_id,
+            "website": r["website"],
+            "chains": r["chains"],
+            "tags": r["tags"],
+            "meta": r["meta"],
+        }
+    payload: list[dict[str, Any]] = list(by_slug.values())
+    deduped = len(rows) - len(payload) - skipped
 
-    print(f"  upserting {len(payload)} rows ({skipped} skipped due to missing subsector)")
+    print(
+        f"  upserting {len(payload)} rows "
+        f"({skipped} skipped due to missing subsector, {deduped} dedup'd by slug)"
+    )
     BATCH = 100
     for i in range(0, len(payload), BATCH):
         client.table("companies").upsert(payload[i : i + BATCH], on_conflict="slug").execute()

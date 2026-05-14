@@ -4,17 +4,23 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import APIRouter, Body, Depends, Query
+from fastapi import APIRouter, Body, Depends, Query, Request
 
 from app.auth import CurrentUser, get_current_user
 from app.models import Notification, NotificationKind, Page, Severity
-from app.supabase_client import admin_client
+from app.supabase_client import user_client
+
+
+def _user_jwt(request: Request) -> str:
+    auth = request.headers.get("authorization", "")
+    return auth.removeprefix("Bearer ").strip()
 
 router = APIRouter(tags=["notifications"])
 
 
 @router.get("/notifications", response_model=Page[Notification])
 async def list_notifications(
+    request: Request,
     user: CurrentUser = Depends(get_current_user),
     unread_only: bool = False,
     kind: NotificationKind | None = None,
@@ -22,11 +28,10 @@ async def list_notifications(
     limit: int = Query(default=50, le=200),
     cursor: str | None = None,
 ) -> Page[Notification]:
-    client = admin_client()
+    client = user_client(_user_jwt(request))
     q = (
         client.table("notifications")
         .select("*")
-        .eq("user_id", user.id)
         .order("created_at", desc=True)
         .limit(limit + 1)
     )
@@ -38,9 +43,10 @@ async def list_notifications(
         q = q.lt("created_at", cursor)
 
     rows = q.execute().data or []
+    _ = user  # used implicitly via JWT-scoped RLS
 
     if severity is not None:
-        # Filter by joining event severity.
+        # Filter by joining event severity (events are public).
         event_ids = [r["event_id"] for r in rows if r.get("event_id")]
         if event_ids:
             sev_rows = (
@@ -67,12 +73,14 @@ async def list_notifications(
 
 
 @router.get("/notifications/unread_count")
-async def unread_count(user: CurrentUser = Depends(get_current_user)) -> dict[str, int]:
+async def unread_count(
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+) -> dict[str, int]:
     res = (
-        admin_client()
+        user_client(_user_jwt(request))
         .table("notifications")
         .select("id", count="exact")
-        .eq("user_id", user.id)
         .is_("read_at", "null")
         .execute()
     )
@@ -82,24 +90,25 @@ async def unread_count(user: CurrentUser = Depends(get_current_user)) -> dict[st
 @router.post("/notifications/{notification_id}/read")
 async def mark_read(
     notification_id: str,
+    request: Request,
     user: CurrentUser = Depends(get_current_user),
 ) -> dict[str, str]:
-    admin_client().table("notifications").update(
+    user_client(_user_jwt(request)).table("notifications").update(
         {"read_at": datetime.now(UTC).isoformat()}
-    ).eq("id", notification_id).eq("user_id", user.id).execute()
+    ).eq("id", notification_id).execute()
     return {"status": "ok"}
 
 
 @router.post("/notifications/read_all")
 async def mark_all_read(
+    request: Request,
     user: CurrentUser = Depends(get_current_user),
     only_kind: NotificationKind | None = Body(default=None, embed=True),
 ) -> dict[str, str]:
     q = (
-        admin_client()
+        user_client(_user_jwt(request))
         .table("notifications")
         .update({"read_at": datetime.now(UTC).isoformat()})
-        .eq("user_id", user.id)
         .is_("read_at", "null")
     )
     if only_kind:

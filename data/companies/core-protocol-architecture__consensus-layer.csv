@@ -1,0 +1,65 @@
+"Entity","Maintaining Organization","Website","Client Repo","Description","Reason for inclusion ","Entity Type","Supported Networks","License","Mainnet Maturity / Production Status","Client Implementation","Role in Consensus","Client Category","Client scope","Implementation language","Client Diversity Risk Flag","Practictioners Note","Practioner Validation Check "
+"Ethereum Consensus Specifications","Ethereum Foundation","https://ethereum.org/en/developers/docs/consensus-mechanisms/","https://github.com/ethereum/consensus-specs","The authoritative, normative specification defining Ethereum’s Proof-of-Stake consensus rules, including fork choice, finality, validator duties, slashing conditions, and upgrade encoding.","- Defines the canonical rules that all Ethereum consensus clients must implement
+- Serves as the single source of truth for consensus behavior
+- Governs how consensus-level upgrades are specified and activated
+- Ensures deterministic convergence across independent client implementations","Protocol Specification (Normative)","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)
+- Future Ethereum networks via fork upgrades","Creative Commons / Open Specification (non-code normative spec; code references under permissive licenses)","Canonical (Always Active, Network-Defining)","N/A (Specification; not an executable client)","- Defines fork choice rules and finality mechanics
+- Specifies validator duties, rewards, and penalties
+- Encodes consensus-level upgrades and fork transitions
+- Acts as the authoritative reference for all consensus clients","Canonical Consensus Specification","Governs all Ethereum consensus clients","N/A (Specification-level; implemented by clients in multiple languages)","Single Source of Truth (Intended)","Ethereum’s consensus is spec-driven rather than client-driven. Independent clients compete on implementation quality but must strictly converge on this specification. This separation is a core safety property of the Ethereum protocol.","If Ethereum Consensus Specifications disappeared:
+- Consensus clients would lose their canonical reference
+- Network upgrades would be impossible to coordinate safely
+- Consensus behavior would fragment, risking chain splits and loss of finality"
+"Prysm","Prysmatic Labs","https://www.offchainlabs.com/prysm","https://github.com/prysmaticlabs/prysm","A production-grade Ethereum consensus client written in Go, implementing Ethereum’s Proof-of-Stake consensus rules and validator duties.","- Implements Ethereum’s Proof-of-Stake consensus specification
+- Directly participates in fork choice, attestations, and finality
+- Historically used by a large share of Ethereum validators
+- Enforces canonical consensus rules at the protocol level","Consensus Client","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)","Apache License 2.0","Production (Mainnet, Widely Adopted)","Ethereum Consensus Client (Beacon Node + Validator Client)","- Executes fork choice rules
+- Coordinates validator duties (proposals, attestations)
+- Participates in finality via Casper FFG
+- Enforces slashing and inactivity penalties","Full Consensus Client (Beacon Node + Validator)","Consensus-only (pairs with separate execution clients)","Go","Historically Dominant (Elevated Correlated Failure Risk)","Prysm’s dominance during earlier PoS phases made client diversity a live protocol risk. Its inclusion is unquestionable because it directly enforces consensus rules, but its historical market share highlighted the need for diversified consensus implementations to reduce systemic risk.","If Prysm disappeared:
+- A large portion of validators would be affected
+- Client diversity would shift materially
+- Consensus participation would require immediate operator coordination
+"
+"Lighthouse","Sigma Prime","https://lighthouse.sigmaprime.io/","https://github.com/sigp/lighthouse","A high-performance Ethereum consensus client written in Rust, designed with a strong emphasis on security, correctness, and efficiency.","- Fully independent implementation of Ethereum’s Proof-of-Stake consensus
+- Actively used by a large share of professional validators
+- Directly participates in fork choice, attestations, and finality
+- Materially improves client diversity at the consensus layer","Consensus Client","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)","Apache License 2.0","Production (Mainnet, Widely Adopted)","Ethereum Consensus Client (Beacon Node + Validator Client)","- Executes fork choice and finality rules
+- Coordinates validator duties
+- Enforces consensus penalties and slashing conditions","Full Consensus Client (Beacon Node + Validator)","Consensus-only (pairs with separate execution clients)","Rust","Balanced Share (Positive for Client Diversity)","Lighthouse materially improves client diversity, which is itself a protocol safety property. Its Rust implementation and production maturity make it a preferred choice for performance- and security-conscious validator operators.","If Lighthouse disappeared:
+- Client diversity would materially decline
+- Correlated failure risk would increase
+- Professional validator operators would need to migrate infrastructure"
+"Teku","Consensys","https://consensys.io/teku","https://github.com/Consensys/teku","An enterprise-grade Ethereum consensus client written in Java, optimized for institutional, regulated, and professional validator environments.","- Implements full Ethereum Proof-of-Stake consensus logic
+- Actively maintained and fork-ready
+- Designed for institutional operational requirements
+- Directly participates in canonical consensus enforcement","Consensus Client","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)","Apache License 2.0","Production (Mainnet, Enterprise-Oriented Adoption)","Ethereum Consensus Client (Beacon Node + Validator Client)","- Executes fork choice and finality rules
+- Coordinates validator participation
+- Supports institutional-grade validator operations","Full Consensus Client (Beacon Node + Validator)","Consensus-only (pairs with separate execution clients)","Java","Minority Implementation (High Strategic Value)","Teku is critical for institutional Ethereum adoption at the validator layer. Its presence ensures that enterprise-grade Java environments can participate directly in consensus without compromising protocol neutrality.","If Teku disappeared:
+- Institutional validator participation would be disrupted
+- Enterprise staking operations would face migration risk
+- Client diversity across language ecosystems would narrow"
+"Nimbus","Status","https://nimbus.team","https://github.com/status-im/nimbus-eth2","A lightweight Ethereum consensus client written in Nim, optimized for low-resource environments and decentralization.","- Implements Ethereum consensus with minimal hardware requirements
+- Enables validator participation from constrained environments
+- Directly enforces consensus rules and finality
+- Expands the practical decentralization set of Ethereum validators","Consensus Client","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)","Apache License 2.0","Production (Mainnet, Selective Adoption)","Ethereum Consensus Client (Beacon Node + Validator Client)","- Executes fork choice and finality rules
+- Coordinates validator duties with low resource overhead
+- Enforces penalties and slashing","Full Consensus Client (Beacon Node + Validator)","Consensus-only (pairs with separate execution clients)","Nim","Minority Implementation (Decentralization-Critical)","Nimbus is strategically important because it lowers the hardware and operational barrier to running a validator. This directly supports Ethereum’s decentralization goals by expanding who can realistically participate in consensus.","If Nimbus disappeared:
+- Low-resource validator participation would decline
+- Hardware accessibility thresholds would increase
+- Decentralization at the validator edge would weaken"
+"Lodestar","ChainSafe","https://lodestar.chainsafe.io","https://github.com/ChainSafe/lodestar","An Ethereum consensus client written in TypeScript, enabling JavaScript-native development, research, and tooling around Ethereum consensus.","- Independent implementation of Ethereum consensus rules
+- Actively participates in forks and upgrades
+- Enables JavaScript-native consensus research and tooling
+- Contributes to language and implementation diversity","Consensus Client","- Ethereum Mainnet
+- Ethereum Testnets (e.g., Goerli, Sepolia, Holesky)","Apache License 2.0","Production (Mainnet, Limited Adoption)","Ethereum Consensus Client (Beacon Node + Validator Client)","- Executes fork choice and finality
+- Supports validator duties
+- Participates in consensus upgrades","Full Consensus Client (Beacon Node + Validator)","Consensus-only (pairs with separate execution clients)","Typescript","Minority Implementation (Research & Diversity Value)","Lodestar is smaller in market share but essential for implementation diversity and JavaScript-native research, reducing systemic risk and expanding contributor access.","If Lodestar disappeared:
+- JavaScript-native consensus experimentation would decline
+- Language-level diversity would narrow
+- Research and tooling pathways into consensus development would shrink"

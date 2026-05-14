@@ -9,7 +9,7 @@ from fastapi import APIRouter, HTTPException, Query
 
 from app.models import EvidenceClass, Severity
 from app.services.embedding import embed_text
-from app.supabase_client import admin_client
+from app.supabase_client import public_client
 
 router = APIRouter(tags=["search"])
 
@@ -43,7 +43,7 @@ async def search_events(
         "p_since": since.isoformat() if since else None,
     }
     try:
-        res = admin_client().rpc("search_events", params).execute()
+        res = public_client().rpc("search_events", params).execute()
     except Exception as exc:  # pragma: no cover
         raise HTTPException(status_code=500, detail=str(exc)) from exc
     return res.data or []

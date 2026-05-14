@@ -59,7 +59,7 @@ async def _verify_token(token: str, settings: Settings) -> dict[str, Any]:
     """
     # First try JWKS-based verification (RS256/ES256).
     try:
-        jwks = await _load_jwks(settings.supabase_jwks_url)
+        jwks = await _load_jwks(settings.jwks_url)
         unverified_header = jwt.get_unverified_header(token)
         kid = unverified_header.get("kid")
         keys = jwks.get("keys", [])

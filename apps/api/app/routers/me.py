@@ -2,18 +2,23 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.auth import CurrentUser, get_current_user
 from app.models import Profile
-from app.supabase_client import admin_client
+from app.supabase_client import user_client
 
 router = APIRouter(tags=["me"])
 
 
 @router.get("/me", response_model=Profile)
-async def get_me(user: CurrentUser = Depends(get_current_user)) -> Profile:
-    client = admin_client()
+async def get_me(
+    request: Request,
+    user: CurrentUser = Depends(get_current_user),
+) -> Profile:
+    auth = request.headers.get("authorization", "")
+    jwt = auth.removeprefix("Bearer ").strip()
+    client = user_client(jwt)
     result = (
         client.table("profiles")
         .select("id, role, display_name, created_at, updated_at")
@@ -23,19 +28,11 @@ async def get_me(user: CurrentUser = Depends(get_current_user)) -> Profile:
     )
     rows = result.data or []
     if not rows:
-        # Trigger should have created it; create lazily if missing.
-        client.table("profiles").insert(
-            {"id": user.id, "display_name": user.email.split("@")[0] if user.email else None}
-        ).execute()
-        result = (
-            client.table("profiles")
-            .select("id, role, display_name, created_at, updated_at")
-            .eq("id", user.id)
-            .limit(1)
-            .execute()
+        # The on_auth_user_created trigger creates the profile; if it's missing
+        # something is wrong with the auth pipeline (or the user's JWT is stale).
+        raise HTTPException(
+            status_code=404,
+            detail="Profile not found; sign out and sign in again",
         )
-        rows = result.data or []
-        if not rows:
-            raise HTTPException(status_code=500, detail="Could not load profile")
 
     return Profile.model_validate(rows[0])

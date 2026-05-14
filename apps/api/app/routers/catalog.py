@@ -5,20 +5,20 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 
 from app.models import Company, Page, Sector, Subsector
-from app.supabase_client import admin_client
+from app.supabase_client import public_client
 
 router = APIRouter(tags=["catalog"])
 
 
 @router.get("/sectors", response_model=list[Sector])
 async def list_sectors() -> list[Sector]:
-    res = admin_client().table("sectors").select("*").order("name").execute()
+    res = public_client().table("sectors").select("*").order("name").execute()
     return [Sector.model_validate(r) for r in (res.data or [])]
 
 
 @router.get("/subsectors", response_model=list[Subsector])
 async def list_subsectors(sector_id: str | None = None) -> list[Subsector]:
-    q = admin_client().table("subsectors").select("*").order("name")
+    q = public_client().table("subsectors").select("*").order("name")
     if sector_id:
         q = q.eq("sector_id", sector_id)
     res = q.execute()
@@ -33,7 +33,7 @@ async def list_companies(
     limit: int = Query(default=50, le=200),
     cursor: str | None = None,
 ) -> Page[Company]:
-    client = admin_client()
+    client = public_client()
     query = client.table("companies").select("*").order("name").limit(limit + 1)
 
     if subsector_id:
@@ -69,7 +69,7 @@ async def list_companies(
 @router.get("/companies/{slug}", response_model=Company)
 async def get_company(slug: str) -> Company:
     res = (
-        admin_client()
+        public_client()
         .table("companies")
         .select("*")
         .eq("slug", slug)
