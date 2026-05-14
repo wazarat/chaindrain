@@ -6,7 +6,7 @@ import hashlib
 import hmac
 import json
 import os
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 import httpx
@@ -74,7 +74,9 @@ async def trigger_agent_run(
 
 
 @router.get("/sources")
-async def list_sources(user: CurrentUser = Depends(get_current_user)) -> list[dict[str, Any]]:
+def list_sources(user: CurrentUser = Depends(get_current_user)) -> list[dict[str, Any]]:
+    """Sync handler: FastAPI runs it in the default thread pool, avoiding the
+    blocking-open-in-async-loop foot-gun."""
     require_admin(user)
     # Sources are stored as a singleton row in agent_runs.meta.sources[],
     # mirrored from apps/agent/app/sources.json. The worker is the source of truth.
@@ -119,7 +121,7 @@ async def finalize_run(
             "found_count": found_count,
             "cost_cents": cost_cents,
             "log_path": log_path,
-            "ended_at": datetime.now(timezone.utc).isoformat(),
+            "ended_at": datetime.now(UTC).isoformat(),
         }
     ).eq("id", run_id).execute()
     return {"status": "ok"}

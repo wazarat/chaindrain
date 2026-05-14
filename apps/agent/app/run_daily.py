@@ -22,7 +22,7 @@ import json
 import logging
 import sys
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -144,7 +144,7 @@ def main() -> int:
     slug_index = _build_company_slug_index(client)
     logger.info("loaded %d companies", len(slug_index))
 
-    started = datetime.now(timezone.utc)
+    started = datetime.now(UTC)
     if not args.dry_run:
         run_res = (
             client.table("agent_runs")
@@ -172,7 +172,7 @@ def main() -> int:
         client.table("agent_runs").update(
             {
                 "status": "success" if inserted > 0 else "partial",
-                "ended_at": datetime.now(timezone.utc).isoformat(),
+                "ended_at": datetime.now(UTC).isoformat(),
                 "found_count": inserted,
                 "meta": {"elapsed_seconds": elapsed, "sources": [s["slug"] for s, _ in findings_by_source]},
             }

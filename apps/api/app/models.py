@@ -7,18 +7,15 @@ generated TypeScript types in `packages/shared-types`.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import Enum
-from typing import Any, Generic, TypeVar
+from enum import StrEnum
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
-
-T = TypeVar("T")
-
 
 # ----------------------------- Enums -----------------------------
 
 
-class EvidenceClass(str, Enum):
+class EvidenceClass(StrEnum):
     protocol_exploit = "protocol_exploit"
     operational_compromise = "operational_compromise"
     market_event = "market_event"
@@ -28,7 +25,7 @@ class EvidenceClass(str, Enum):
     other = "other"
 
 
-class Severity(str, Enum):
+class Severity(StrEnum):
     info = "info"
     low = "low"
     medium = "medium"
@@ -36,25 +33,25 @@ class Severity(str, Enum):
     critical = "critical"
 
 
-class EventStatus(str, Enum):
+class EventStatus(StrEnum):
     unverified = "unverified"
     corroborated = "corroborated"
     confirmed = "confirmed"
     retracted = "retracted"
 
 
-class ProfileRole(str, Enum):
+class ProfileRole(StrEnum):
     user = "user"
     admin = "admin"
 
 
-class NotificationKind(str, Enum):
+class NotificationKind(StrEnum):
     watched_company_event = "watched_company_event"
     sector_signal = "sector_signal"
     system = "system"
 
 
-class CompanyEventRole(str, Enum):
+class CompanyEventRole(StrEnum):
     victim = "victim"
     attacker = "attacker"
     vendor = "vendor"
@@ -240,7 +237,7 @@ class ThreatMatrix(BaseModel):
 # ----------------------------- Pagination -----------------------------
 
 
-class Page(BaseModel, Generic[T]):
+class Page[T](BaseModel):
     items: list[T]
     next_cursor: str | None = None
 

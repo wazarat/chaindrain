@@ -13,7 +13,7 @@ net that re-validates the labels and discards garbage.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 VALID_EVIDENCE = {
@@ -151,6 +151,6 @@ def classify(
         sources=list(dict.fromkeys(finding.sources)),  # de-dupe preserve order
         meta={
             "raw": finding.raw,
-            "classified_at": (now or datetime.now(timezone.utc)).isoformat(),
+            "classified_at": (now or datetime.now(UTC)).isoformat(),
         },
     )

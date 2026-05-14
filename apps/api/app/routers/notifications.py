@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Body, Depends, Query
 
@@ -85,7 +85,7 @@ async def mark_read(
     user: CurrentUser = Depends(get_current_user),
 ) -> dict[str, str]:
     admin_client().table("notifications").update(
-        {"read_at": datetime.now(timezone.utc).isoformat()}
+        {"read_at": datetime.now(UTC).isoformat()}
     ).eq("id", notification_id).eq("user_id", user.id).execute()
     return {"status": "ok"}
 
@@ -98,7 +98,7 @@ async def mark_all_read(
     q = (
         admin_client()
         .table("notifications")
-        .update({"read_at": datetime.now(timezone.utc).isoformat()})
+        .update({"read_at": datetime.now(UTC).isoformat()})
         .eq("user_id", user.id)
         .is_("read_at", "null")
     )

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 
@@ -43,7 +43,7 @@ async def start_run(
     res = (
         admin_client()
         .table("agent_runs")
-        .insert({"status": "running", "started_at": datetime.now(timezone.utc).isoformat()})
+        .insert({"status": "running", "started_at": datetime.now(UTC).isoformat()})
         .execute()
     )
     rows = res.data or []

@@ -7,7 +7,7 @@ back to FTS).
 
 from __future__ import annotations
 
-from typing import Sequence
+from collections.abc import Sequence
 
 import httpx
 from tenacity import retry, stop_after_attempt, wait_exponential

@@ -28,8 +28,9 @@ PY_TO_TS = {
 def schema_for_models() -> dict:
     """Build a single JSON schema by walking app.models."""
     sys.path.insert(0, str(REPO_ROOT / "apps" / "api"))
-    from app import models  # type: ignore[import-not-found]
     from pydantic import BaseModel
+
+    from app import models  # type: ignore[import-not-found]
 
     out_defs: dict[str, dict] = {}
     out_enums: dict[str, list[str]] = {}

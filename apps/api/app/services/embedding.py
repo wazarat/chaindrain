@@ -8,7 +8,7 @@ for ad-hoc use from the API (e.g. search query encoding).
 from __future__ import annotations
 
 import os
-from typing import Sequence
+from collections.abc import Sequence
 
 import httpx
 
