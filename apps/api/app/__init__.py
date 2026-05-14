@@ -1,0 +1,1 @@
+"""Chaindrain FastAPI app package."""

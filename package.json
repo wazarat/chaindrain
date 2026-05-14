@@ -1,0 +1,23 @@
+{
+  "name": "chaindrain",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Chaindrain.xyz - exploit intelligence for crypto/web3 protocols",
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @chaindrain/web dev",
+    "build:web": "pnpm --filter @chaindrain/web build",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck",
+    "format": "prettier --write \"**/*.{ts,tsx,md,json}\"",
+    "gen:types": "python apps/api/scripts/gen_types.py"
+  },
+  "devDependencies": {
+    "prettier": "^3.3.3",
+    "prettier-plugin-tailwindcss": "^0.6.6"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  }
+}

@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  PNPM_VERSION: 9
+  NODE_VERSION: 20
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  web-lint-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - name: Install
+        run: pnpm install --frozen-lockfile
+        working-directory: .
+      - name: Typecheck
+        run: pnpm typecheck
+
+  shared-types-typecheck:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: packages/shared-types
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: ${{ env.PNPM_VERSION }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: .
+      - run: pnpm typecheck
+
+  api-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+      - name: Mypy
+        run: mypy app || true # advisory only at MVP
+
+  agent-lint:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: apps/agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install
+        run: uv pip install --system -e ".[dev]"
+      - name: Ruff
+        run: ruff check .
+
+  alembic-migrate-check:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: chaindrain_test
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    defaults:
+      run:
+        working-directory: apps/api
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install uv
+        run: curl -LsSf https://astral.sh/uv/install.sh | sh
+      - name: Install API deps
+        run: uv pip install --system -e ".[dev]"
+      - name: Apply Supabase migrations to test DB
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # Apply each .sql migration file in order.
+          for f in $(ls ../../supabase/migrations/*.sql | sort); do
+            echo "Applying $f"
+            psql -h localhost -U postgres -d chaindrain_test -f "$f"
+          done
+      - name: Alembic offline migrate-check
+        env:
+          DATABASE_URL: postgresql+psycopg://postgres:postgres@localhost:5432/chaindrain_test
+        run: alembic check || true # we manage SQL by hand; this is informational
+
+  rls-audit:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: chaindrain_audit
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          - 5432:5432
+    steps:
+      - uses: actions/checkout@v4
+      - name: Apply migrations
+        env:
+          PGPASSWORD: postgres
+        run: |
+          # auth schema needs to exist for RLS-tied policies that reference auth.users
+          psql -h localhost -U postgres -d chaindrain_audit -c "create schema if not exists auth; create table if not exists auth.users (id uuid primary key, email text);"
+          for f in $(ls supabase/migrations/*.sql | sort); do
+            psql -h localhost -U postgres -d chaindrain_audit -f "$f" || true
+          done
+      - name: Run audit
+        env:
+          PGPASSWORD: postgres
+        run: |
+          violations=$(psql -h localhost -U postgres -d chaindrain_audit -tA -f scripts/rls_audit.sql | grep -v '^$' | wc -l)
+          echo "violations=$violations"
+          if [ "$violations" -gt 0 ]; then
+            echo "RLS audit failed:"
+            psql -h localhost -U postgres -d chaindrain_audit -f scripts/rls_audit.sql
+            exit 1
+          fi

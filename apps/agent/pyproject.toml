@@ -1,0 +1,34 @@
+[project]
+name = "chaindrain-agent"
+version = "0.1.0"
+description = "Chaindrain Comet-driven exploit-intelligence worker"
+requires-python = ">=3.12"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "httpx>=0.27.0",
+  "pydantic>=2.8.0",
+  "pydantic-settings>=2.4.0",
+  "supabase>=2.7.0",
+  "playwright>=1.46.0",
+  "tenacity>=8.5.0",
+  "sentry-sdk>=2.10.0",
+  "orjson>=3.10.7",
+  "python-dateutil>=2.9.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "ruff>=0.6.0",
+  "mypy>=1.11.0",
+  "pytest>=8.3.0",
+  "pytest-asyncio>=0.23.0",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "ASYNC"]
+ignore = ["E501"]

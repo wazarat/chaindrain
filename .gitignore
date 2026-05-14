@@ -1,0 +1,58 @@
+# dependencies
+node_modules/
+.pnpm-store/
+
+# next.js
+.next/
+out/
+build/
+dist/
+
+# python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.uv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+# env
+.env
+.env.*.local
+.env.local
+.env.development.local
+.env.production.local
+.env.test.local
+!.env.example
+
+# logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+
+# build artifacts
+.turbo/
+coverage/
+.tsbuildinfo
+
+# supabase
+supabase/.branches/
+supabase/.temp/
+supabase/seed_data.local.sql
+
+# data / secrets
+*.local.csv
+data/private/
