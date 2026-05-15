@@ -231,3 +231,99 @@ None yet this session — the changes are doc-only and a database state mutation
 3. **Schedule the daily cron** via the existing `supabase/functions/cron-trigger` edge function (deploy it, set `AGENT_RUN_URL` + `AGENT_HMAC_SECRET` secrets on Supabase, enable cron at 13:00 UTC).
 4. **Vercel preview CORS** (optional): add `ALLOWED_ORIGIN_REGEX` to `Settings` + switch `CORSMiddleware` to `allow_origin_regex` when set, so preview deploys can hit the API.
 5. **Sentry DSNs** for API + agent (env vars already plumbed).
+
+---
+
+## 2026-05-15 (PM #2) — Day 3: chaindrain-agent live, trigger path verified, daily cron scheduled
+
+### Session goals
+1. Deploy `chaindrain-agent` to Fly (scaffold + Dockerfile already in `apps/agent/`).
+2. Wire `AGENT_RUN_URL` on `chaindrain-api` so the "Run agent now" button stops 503'ing.
+3. Verify the full UI → API → agent → `agent_runs` path end-to-end.
+4. Deploy `supabase/functions/cron-trigger` and schedule the daily 13:00 UTC fire.
+5. (Optional) Add `ALLOWED_ORIGIN_REGEX` for Vercel preview deploys.
+6. (Optional) Wire Sentry DSNs.
+7. (LAST) Rotate the Supabase service-role key that leaked into shell history.
+
+### What was done
+
+#### a. Pre-existing-bug fixes in `apps/agent` (Phase A)
+Before deploying the agent it had two latent bugs that would have made the trigger path crash on first use:
+
+1. **`apps/agent/app/run_daily.py`**: `main()` did `argparse.parse_args()` directly against `sys.argv`. Under uvicorn the process `sys.argv` is `["uvicorn", "app.server:app", "--host", "0.0.0.0", "--port", "8080"]`, so argparse would have errored with `unrecognized arguments: --host …` and crashed the BackgroundTask. Refactored: split into `run(dry_run, limit_sources)` (callable in-process with kwargs, no argv) and a thin `main()` that parses CLI args then calls `run(**vars(args))`. `run()` now also returns the inserted count.
+
+2. **`apps/agent/app/server.py`**: HMAC-verified the body but never parsed it, so the API's `{"dry_run": …, "sources_only": …}` was silently ignored. Updated to `json.loads(body)`, extract `dry_run: bool` and `limit_sources: int | None`, pass to `_run_daily()` via `functools.partial`. Response now echoes the parsed values so callers can confirm: `{"status": "scheduled", "dry_run": …, "limit_sources": …}`.
+
+#### b. `ALLOWED_ORIGIN_REGEX` on the API (Phase B)
+- `apps/api/app/config.py`: added `allowed_origin_regex: str | None = Field(default=None, alias="ALLOWED_ORIGIN_REGEX")`.
+- `apps/api/app/main.py`: constructed `cors_kwargs` dict; conditionally added `allow_origin_regex` only when the env var is set, then `app.add_middleware(CORSMiddleware, **cors_kwargs)`. Coexists with the explicit `allow_origins` list — Starlette accepts both.
+
+#### c. `chaindrain-agent` on Fly (Phases C–D)
+- `flyctl apps create chaindrain-agent --org personal`.
+- Added a `.dockerignore` to `apps/agent/` (excluding `__pycache__`, `.ruff_cache`, `.env*`, etc. — was missing, would have bloated build context).
+- Set 3 Fly secrets via `flyctl secrets import` (heredoc-piped from user terminal to keep them out of zsh history, mostly): `SUPABASE_URL`, `SUPABASE_SERVICE_ROLE_KEY`, `AGENT_HMAC_SECRET`. The latter two share values with `chaindrain-api`.
+- `flyctl deploy --remote-only` succeeded in one shot. Build time ~3 min (Debian trixie base, all Chromium runtime deps, Playwright Chromium-headless-shell 147.0.7727.15). Final image 612 MB.
+- 2× machines provisioned in `iad`. Healthcheck `/healthz` green.
+
+#### d. Smoke test #1 — direct HMAC curl with `dry_run=true` (Phase E)
+- Python one-shot: HMAC-SHA256-sign `{"trigger":"manual","dry_run":true,"limit_sources":1}` with the shared secret, POST to `https://chaindrain-agent.fly.dev/run`.
+- Response `200 {"status":"scheduled","dry_run":true,"limit_sources":1}` — confirms Phase A2 body-parsing fix.
+- Agent logs showed: `loaded 1 sources`, `loaded 499 companies`, `source=rekt-news findings=23`, 23× `DRY-RUN would insert: …`, `done. inserted=23 elapsed=38.5s`.
+- `select count(*) from public.agent_runs where started_at > now() - interval '10 minutes'` → 0 (dry-run path skips the insert, as expected).
+- (One initial 401: the first attempt used `openssl dgst -sha256 -hmac SECRET` over stdin which produced an empty sig on macOS openssl. Switched to Python `hmac.new(...).hexdigest()` — works.)
+
+#### e. Wire API → agent (Phase F)
+- Redeployed `chaindrain-api` first to ship the new `ALLOWED_ORIGIN_REGEX` code (would have been dead env var otherwise). Image 96 MB, ~2 min.
+- `flyctl secrets set AGENT_RUN_URL=https://chaindrain-agent.fly.dev/run 'ALLOWED_ORIGIN_REGEX=https://chaindrain-git-.*\.vercel\.app' --app chaindrain-api` — both in one call → one rolling restart.
+- `curl /healthz` → 200 post-restart.
+
+#### f. End-to-end smoke test via `/admin` button (Phase H)
+- User signed in to `chaindrain.vercel.app` as `waz@canhav.com` (admin), clicked "Run agent now" on `/admin`.
+- Button response: `HTTP 200: {"status":200,"body":"{\"status\":\"scheduled\",\"dry_run\":false,\"limit_sources\":null}"}` — the full chain works.
+- Two clicks (user clicked twice) produced two `agent_runs` rows with `status='running'`: `0bceb2fb-9141-437e-91e2-1cced2ee6e57` at 17:24:31Z, `14753d41-a5cc-4bbe-8b86-1d3cf5080b3e` at 17:26:20Z.
+- Agent logs: each run loaded 6 sources + 499 companies, processed sources sequentially via Playwright. rekt-news returned 23 findings; defillama-hacks, chainalysis-blog, sec-press-releases all returned 0.
+- **0 events were inserted into `public.events`** — all 23 rekt-news findings were dropped by the classifier because their protocol names (Wasabi, KelpDAO, Drift Protocol, Hyperbridge, …) don't match any slug in our 499-company crypto-infra catalog. Rekt.news covers DeFi, not infra. **Infrastructure works; source curation is a Day 4+ tuning task.**
+
+#### g. `cron-trigger` Edge Function + daily schedule (Phase I)
+- Deployed `supabase/functions/cron-trigger/index.ts` (already written, untouched) via MCP `deploy_edge_function`. Version 1, `verify_jwt=false`, status ACTIVE.
+- Discovered the existing migration `20250101000800_cron.sql` already created `pg_cron` job `chaindrain_daily_agent` at `0 13 * * *`, but its command referenced two Postgres GUCs (`app.settings.cron_trigger_url`, `app.settings.cron_function_key`) that were never set, so `net.http_post(url := NULL, …)` would have silently failed at fire time.
+- Wrote append-only migration `supabase/migrations/20250101001100_cron_trigger_config.sql` (per DECISIONS §8) that unschedules and re-creates the job with the function URL inlined and no auth header (the function is `verify_jwt=false`). Applied via `mcp0_apply_migration` — `cron.job` now shows the rewritten command.
+- **Pending**: user must set `AGENT_RUN_URL` and `AGENT_HMAC_SECRET` as Edge Function secrets in the Supabase dashboard (MCP can't manage function secrets). Until then the daily 13:00 UTC fire will 500.
+
+#### h. Skipped: Sentry (Phase G)
+- No DSNs provided this session. Code in `apps/api/app/main.py:_init_sentry` and `apps/agent/app/server.py:_init_sentry` already reads `SENTRY_DSN_API` / `SENTRY_DSN_AGENT` (alias matches `Settings.sentry_dsn`) — just need `flyctl secrets set` once DSNs are provisioned.
+
+### Files created
+- `apps/agent/.dockerignore` (new — was missing, prevented `.ruff_cache/` etc. from going into the build context).
+- `supabase/migrations/20250101001100_cron_trigger_config.sql` (rewrite of the daily cron job to call the Edge Function directly).
+
+### Files modified
+- `apps/agent/app/run_daily.py` — split `main()` into `run(dry_run, limit_sources)` (in-process callable) + thin `main()` (CLI).
+- `apps/agent/app/server.py` — parse JSON body, pass `dry_run`/`limit_sources` to `_run_daily()` via `functools.partial`, return parsed values in response.
+- `apps/api/app/config.py` — added `allowed_origin_regex` field (alias `ALLOWED_ORIGIN_REGEX`).
+- `apps/api/app/main.py` — conditionally pass `allow_origin_regex=` to `CORSMiddleware` when set.
+- `docs/AI_CONTEXT.md` — flipped Day 2 KPI #3 + #5 to ✓, added §9c Day 3 KPI table, replaced §10 with Day 3 close + next-session follow-ups, added `cron-trigger` row to §3 infra table and migration to §6 list.
+- `docs/CHANGELOG_DEV.md` — this entry.
+
+### Live infrastructure status
+| Service | URL | Status |
+|---|---|---|
+| Web | https://chaindrain.vercel.app | Live, KPI green |
+| FastAPI | https://chaindrain-api.fly.dev | Live, 2× machines, redeployed with `ALLOWED_ORIGIN_REGEX` + `AGENT_RUN_URL` |
+| Comet agent | https://chaindrain-agent.fly.dev | **NEW** — 2× shared-cpu-1x 1024 MB, auto-stop, image 612 MB |
+| Supabase | uftbynydcmzfggltyjao.supabase.co | 12 migrations applied (added `cron_trigger_config`); `cron-trigger` Edge Function v1 active |
+
+### Commits
+- (pending) `day 3: chaindrain-agent on fly, trigger path verified, daily cron scheduled, CORS regex`
+
+### Security follow-ups (must do; carried over from Day 2)
+- **Rotate `SUPABASE_SERVICE_ROLE_KEY`** — it has now transited the Cascade transcript (Day 2 setup, Day 3 user paste), shell history on user's mac, and Fly secret stores for two apps. Steps: Supabase dashboard → API → Reset `service_role` → `flyctl secrets set SUPABASE_SERVICE_ROLE_KEY=<new> --app chaindrain-api` → same for `chaindrain-agent` → update local `apps/api/.env` → `sed -i '' '/service_role\|SUPABASE_SERVICE_ROLE_KEY=ey/d' ~/.zsh_history`. Prefer `flyctl secrets set --stdin` (or `flyctl secrets import`) on the rotation re-set to keep the new value out of history.
+- **Rotate `AGENT_HMAC_SECRET`** — also leaked into the transcript (single-line paste this session) and shell history. Rotate alongside the service-role key. After rotation, re-set on `chaindrain-api`, `chaindrain-agent`, AND in the Supabase Edge Function secrets (the function uses it to sign requests to the agent).
+
+### Next steps for the next session (Day 4)
+1. **Set Edge Function secrets** in Supabase dashboard so tonight's 13:00 UTC cron actually fires successfully. Verify by checking `agent_runs` for a row with `meta.trigger='cron'` after fire.
+2. **Rotate both shared secrets** (service-role + AGENT_HMAC_SECRET) per security follow-ups above. Verify both apps healthy post-rotation; verify trigger button still works (i.e., the new HMAC is consistent across api/agent/edge-function).
+3. **Wire Sentry DSNs** — `SENTRY_DSN_API` on `chaindrain-api`, `SENTRY_DSN_AGENT` on `chaindrain-agent`. Code already reads them.
+4. **Catalog vs source coverage.** Either expand `companies` to include the DeFi protocols rekt.news writes about, or curate `apps/agent/app/sources.json` to be infra-focused (Mandiant, Trail of Bits, US Treasury OFAC, etc.). The current pipeline produces 0 inserts because of the slug-match gap.
+5. **Re-trigger** the agent post-fix and confirm at least one event row lands in `public.events`, threat-matrix cell delta visible after `refresh_threat_matrix()`.
+6. **Set `PERPLEXITY_API_KEY` / `COMET_API_KEY` / `OPENAI_API_KEY`** on `chaindrain-agent` to enable Comet + embeddings. Optional; Playwright-only mode is the fallback and is working.

@@ -62,14 +62,16 @@ def create_app() -> FastAPI:
         description="Exploit-intelligence backend for chaindrain.xyz",
     )
 
-    app.add_middleware(
-        CORSMiddleware,
-        allow_origins=settings.cors_origins,
-        allow_credentials=True,
-        allow_methods=["*"],
-        allow_headers=["*"],
-        expose_headers=["x-request-id"],
-    )
+    cors_kwargs: dict[str, object] = {
+        "allow_origins": settings.cors_origins,
+        "allow_credentials": True,
+        "allow_methods": ["*"],
+        "allow_headers": ["*"],
+        "expose_headers": ["x-request-id"],
+    }
+    if settings.allowed_origin_regex:
+        cors_kwargs["allow_origin_regex"] = settings.allowed_origin_regex
+    app.add_middleware(CORSMiddleware, **cors_kwargs)
     app.add_middleware(RequestIdMiddleware)
 
     limiter = Limiter(

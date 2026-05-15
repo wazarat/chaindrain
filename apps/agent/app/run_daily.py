@@ -127,25 +127,25 @@ async def _ingest(
     return inserted
 
 
-def main() -> int:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--dry-run", action="store_true")
-    parser.add_argument("--limit-sources", type=int, default=None)
-    args = parser.parse_args()
+def run(dry_run: bool = False, limit_sources: int | None = None) -> int:
+    """Execute the daily ingestion run.
 
+    Callable in-process (e.g. from FastAPI BackgroundTasks) without touching sys.argv.
+    Returns the number of events inserted (or would-have-inserted, in dry-run mode).
+    """
     s = get_settings()
     client = create_client(s.supabase_url, s.supabase_service_role_key)
 
     sources = _load_sources()
-    if args.limit_sources:
-        sources = sources[: args.limit_sources]
+    if limit_sources:
+        sources = sources[:limit_sources]
     logger.info("loaded %d sources", len(sources))
 
     slug_index = _build_company_slug_index(client)
     logger.info("loaded %d companies", len(slug_index))
 
     started = datetime.now(UTC)
-    if not args.dry_run:
+    if not dry_run:
         run_res = (
             client.table("agent_runs")
             .insert({"status": "running", "started_at": started.isoformat()})
@@ -163,12 +163,12 @@ def main() -> int:
             findings_by_source,
             slug_index,
             embed_key=s.openai_api_key,
-            dry_run=args.dry_run,
+            dry_run=dry_run,
         )
     )
     elapsed = time.time() - t0
 
-    if not args.dry_run and run_id:
+    if not dry_run and run_id:
         client.table("agent_runs").update(
             {
                 "status": "success" if inserted > 0 else "partial",
@@ -179,6 +179,15 @@ def main() -> int:
         ).eq("id", run_id).execute()
 
     logger.info("done. inserted=%d elapsed=%.1fs", inserted, elapsed)
+    return inserted
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--limit-sources", type=int, default=None)
+    args = parser.parse_args()
+    run(dry_run=args.dry_run, limit_sources=args.limit_sources)
     return 0
 
 

@@ -34,6 +34,10 @@ class Settings(BaseSettings):
         default="http://localhost:3000",
         alias="ALLOWED_ORIGINS",
     )
+    allowed_origin_regex: str | None = Field(
+        default=None,
+        alias="ALLOWED_ORIGIN_REGEX",
+    )
 
     # Agent integration
     agent_run_url: str | None = Field(default=None, alias="AGENT_RUN_URL")

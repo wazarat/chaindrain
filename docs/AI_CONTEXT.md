@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-15 PM (Day 2 KPIs #1 and #2 met; #3 awaits Vercel env var).
+**Last updated:** 2026-05-15 PM #2 (Day 3 — agent live on Fly, trigger path verified end-to-end, daily cron scheduled).
 **Purpose:** Single source of truth for an AI assistant starting a new chat. Read this first, then `DECISIONS.md`, then `CHANGELOG_DEV.md`.
 
 ---
@@ -43,7 +43,8 @@ Workspace root has `pnpm-workspace.yaml` listing `apps/web` + `packages/*`.
 | **GitHub** | `github.com/wazarat/chaindrain` | `main` is `7a85ca1` |
 | **Vercel** | `chaindrain.vercel.app` | Web app, Root Directory must be `apps/web` (see §8) |
 | **FastAPI** | `chaindrain-api.fly.dev` | 2× shared-cpu-1x 512 MB in `iad`. Healthcheck `GET /healthz`. Deployed via CLI from `apps/api/` (not the GitHub integration — see DECISIONS §10). |
-| **Comet agent** | not deployed | Scaffold + `fly.toml` + Dockerfile committed under `apps/agent/`. Day 3 work. |
+| **Comet agent** | `chaindrain-agent.fly.dev` | 2× shared-cpu-1x 1024 MB in `iad`, auto-stop. HMAC-verified `POST /run` endpoint; runs `run_daily.run()` in BackgroundTask. Image ~612 MB (Playwright + Chromium baked in). Deployed via CLI from `apps/agent/`. |
+| **`cron-trigger` Edge Function** | `…supabase.co/functions/v1/cron-trigger` | Deployed via MCP, `verify_jwt=false`. Daily 13:00 UTC fire via `pg_cron` job `chaindrain_daily_agent`. Function secrets `AGENT_RUN_URL` + `AGENT_HMAC_SECRET` must be set in Supabase dashboard. |
 
 Supabase MCP is wired to this project — the assistant can run SQL, list migrations, get advisors, etc. directly.
 
@@ -104,9 +105,10 @@ JWT verification in `apps/api/app/auth.py` uses **JWKS** (`/auth/v1/.well-known/
 20250101000500_triggers_signals.sql            (tg_events_after_insert, tg_fanout_watched_company_event, detect_sector_signal)
 20250101000600_threat_matrix.sql               (mv_threat_matrix, v_threat_components, refresh_threat_matrix)
 20250101000700_search.sql                      (search_events hybrid pgvector+FTS)
-20250101000800_cron.sql                        (pg_cron jobs for refresh)
-20250101000900_rls_audit_fn.sql                (NEW: rls_audit())
-20250101001000_harden_security.sql             (NEW: revoke EXECUTE, pin search_path, security_invoker view)
+20250101000800_cron.sql                        (pg_cron jobs for refresh — original cron-trigger schedule depended on unset GUCs)
+20250101000900_rls_audit_fn.sql                (rls_audit())
+20250101001000_harden_security.sql             (revoke EXECUTE, pin search_path, security_invoker view)
+20250101001100_cron_trigger_config.sql         (NEW Day 3: rewrite chaindrain_daily_agent to call cron-trigger Edge Function directly, no auth header)
 ```
 
 Live Supabase has these applied with auto-generated timestamps (`20260514…`). Repo file versions are the canonical truth for fresh deploys.
@@ -195,19 +197,36 @@ pnpm --filter @chaindrain/web dev
 | `chaindrain-api` deployed | ✓ (Fly, 2× machines, `iad`) |
 | Synthetic HMAC event lands via `/agent/events` | ✓ (event `bfafcafb-589b-4c6e-b9e5-f57bd6510432`, status auto-promoted to `corroborated`) |
 | Threat matrix shows ≥1 non-zero cell after refresh | ✓ (`liquid-staking-tokens` × `operational_compromise`, score 1.0) |
-| Admin triage UI lists pending events with Confirm/Retract | ⏳ Code shipped at `/admin/events`; smoke test pending Vercel redeploy with `NEXT_PUBLIC_API_BASE_URL` |
-| `/me` round-trip works over HTTP from prod | ⏳ Pending Vercel redeploy |
+| Admin triage UI lists pending events with Confirm/Retract | ✓ (user-confirmed smoke test on prod, Day 3 session) |
+| `/me` round-trip works over HTTP from prod | ✓ (implicit — `/admin/events` triage hits the API with bearer token successfully) |
+
+## 9c. Day 3 KPI gate — status
+
+| KPI | Status |
+|---|---|
+| `chaindrain-agent` deployed to Fly | ✓ (`chaindrain-agent.fly.dev`, 2× shared-cpu-1x 1024 MB, `iad`, image 612 MB) |
+| Agent `/run` HMAC-verifies + parses JSON body (`dry_run`, `limit_sources`) | ✓ (Phase A fixes: `run_daily.run()` callable; `server.py` reads body; smoke-tested via curl with `dry_run=true,limit_sources=1` → 200 + 23 dry-run findings from rekt-news) |
+| Trigger path end-to-end: `/admin` UI → API admin → HMAC sign → agent `/run` → BackgroundTask | ✓ (user clicked "Run agent now"; API forwarded HMAC-signed body; agent returned `{"status":"scheduled","dry_run":false,"limit_sources":null}`) |
+| `agent_runs` row inserted by live run | ✓ (rows `0bceb2fb…` at 17:24:31Z and `14753d41…` at 17:26:20Z, status=`running` → terminal) |
+| `ALLOWED_ORIGIN_REGEX` wired (Vercel preview deploys can call API) | ✓ (code in `apps/api/app/{config,main}.py`; Fly secret set to `https://chaindrain-git-.*\.vercel\.app`) |
+| `cron-trigger` Edge Function deployed | ✓ (v1, `verify_jwt=false`, ACTIVE) |
+| `pg_cron` schedule fires daily at 13:00 UTC | ✓ (job `chaindrain_daily_agent` rewritten via migration `20250101001100_cron_trigger_config.sql` to call function URL directly, no auth header) |
+| Edge Function secrets `AGENT_RUN_URL` + `AGENT_HMAC_SECRET` set | ⏳ Pending user — must be set in Supabase dashboard before first scheduled fire works |
+| Service-role key rotated | ⏳ End-of-session cleanup (Phase J) |
+| Sentry DSNs wired | ⊘ Skipped (no DSNs provided this session) |
+
+**Catalog-coverage caveat:** the first real run produced 23 raw findings from rekt-news but 0 events inserted because their protocol names (Wasabi, KelpDAO, Drift, Hyperbridge, …) don't match our 499-company crypto-infra catalog. This is expected; rekt.news covers DeFi protocols, not infrastructure. Source curation / catalog expansion is a Day 4+ tuning task.
 
 ---
 
 ## 10. Where work paused at end of last session
 
-**Day 2 is mostly closed.** The 2026-05-15 PM session deployed `chaindrain-api` to Fly, posted a synthetic HMAC-signed event end-to-end, refreshed `mv_threat_matrix` (now one non-zero cell), and built the admin triage UI at `/admin/events`.
+**Day 3 is closed.** All four required Day 3 goals achieved: agent deployed, trigger path verified end-to-end (`/admin` button → `agent_runs` row), Edge Function deployed, daily cron scheduled. `ALLOWED_ORIGIN_REGEX` added (optional goal #5).
 
-**Two things remain before Day 2 is fully closed:**
-1. User adds `NEXT_PUBLIC_API_BASE_URL=https://chaindrain-api.fly.dev` to Vercel Production env and redeploys.
-2. Signed in as `waz@canhav.com`, visit `/admin/events`, Confirm or Retract the synthetic event, observe `mv_threat_matrix` change after `refresh_threat_matrix()`.
+**Open follow-ups for the next session:**
+1. **Set Edge Function secrets in Supabase dashboard.** Function `cron-trigger` needs `AGENT_RUN_URL=https://chaindrain-agent.fly.dev/run` and `AGENT_HMAC_SECRET=<same as Fly>`. Until these are set the daily 13:00 UTC fire will 500. Project Settings → Edge Functions → Secrets.
+2. **Rotate Supabase service-role key + AGENT_HMAC_SECRET.** Both have transited the Cascade transcript / `~/.zsh_history` multiple times. Steps in DECISIONS §10 / the original Day 3 plan §J. Rotate, re-set on both Fly apps via `flyctl secrets set --stdin`, scrub `~/.zsh_history`.
+3. **Wire Sentry DSNs.** `apps/api/app/main.py:_init_sentry` and `apps/agent/app/server.py:_init_sentry` already read `SENTRY_DSN_API` / `SENTRY_DSN_AGENT` respectively. Just `flyctl secrets set` once DSNs are provisioned.
+4. **Catalog vs source coverage.** The 23 rekt-news findings from the first live run all dropped at the classifier because protocol names don't match our 499-company catalog. Either add DeFi protocols to the catalog or curate sources to be infra-focused. Day 4+ tuning.
 
-**Security follow-up not yet done:** the Supabase service-role key was pasted into the user's shell during setup. It is currently in `~/.zsh_history` and the Cascade transcript. Must be rotated (Supabase dashboard → API → Reset `service_role`) and the new value re-set on Fly via `flyctl secrets set SUPABASE_SERVICE_ROLE_KEY=<new> --app chaindrain-api`.
-
-**Day 3 work:** deploy `chaindrain-agent` worker (the Comet ingestion scraper), wire `AGENT_RUN_URL` on the API, schedule the daily Supabase Edge Function cron, optionally add preview-deploy CORS regex and Sentry DSNs.
+**Day 4+ candidates:** broader source curation, notification fan-out testing, Sentry, Coordinator UI polish, prod observability dashboards.
