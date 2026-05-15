@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-15 (Day 1 KPI gate closed).
+**Last updated:** 2026-05-15 PM (Day 2 KPIs #1 and #2 met; #3 awaits Vercel env var).
 **Purpose:** Single source of truth for an AI assistant starting a new chat. Read this first, then `DECISIONS.md`, then `CHANGELOG_DEV.md`.
 
 ---
@@ -42,8 +42,8 @@ Workspace root has `pnpm-workspace.yaml` listing `apps/web` + `packages/*`.
 | **Supabase project** | `uftbynydcmzfggltyjao.supabase.co` | All 11 migrations applied + seed + 499 companies imported |
 | **GitHub** | `github.com/wazarat/chaindrain` | `main` is `7a85ca1` |
 | **Vercel** | `chaindrain.vercel.app` | Web app, Root Directory must be `apps/web` (see §8) |
-| **FastAPI** | not deployed | Runs locally on `:8000` |
-| **Comet agent** | not deployed | Scaffold only |
+| **FastAPI** | `chaindrain-api.fly.dev` | 2× shared-cpu-1x 512 MB in `iad`. Healthcheck `GET /healthz`. Deployed via CLI from `apps/api/` (not the GitHub integration — see DECISIONS §10). |
+| **Comet agent** | not deployed | Scaffold + `fly.toml` + Dockerfile committed under `apps/agent/`. Day 3 work. |
 
 Supabase MCP is wired to this project — the assistant can run SQL, list migrations, get advisors, etc. directly.
 
@@ -130,8 +130,11 @@ ENVIRONMENT=development
 SUPABASE_URL=https://uftbynydcmzfggltyjao.supabase.co
 SUPABASE_ANON_KEY=<same anon key>
 SUPABASE_SERVICE_ROLE_KEY=        # optional in dev; admin/agent endpoints 503 if empty
+AGENT_HMAC_SECRET=               # required for /agent/* routes; share with apps/agent if running locally
 ALLOWED_ORIGINS=http://localhost:3000
 ```
+
+Prod Fly secrets on `chaindrain-api` (`flyctl secrets list --app chaindrain-api`): the same set above with real values, plus `ALLOWED_ORIGINS=https://chaindrain.vercel.app`.
 
 **Run:**
 ```bash
@@ -169,7 +172,7 @@ pnpm --filter @chaindrain/web dev
   }
   ```
 - **`7a85ca1` is live.** `chaindrain.vercel.app` renders the landing page. The simplified `vercel.json` (no `cd ../..`) was the fix.
-- **API is not deployed.** `NEXT_PUBLIC_API_BASE_URL` in Vercel is empty, so the production web app cannot reach `/me`, `/watchlists`, etc. Authenticated reads from the live site need a deployed API (Fly/Railway/Render for FastAPI, or rewrite as Next.js Route Handlers using `@supabase/ssr`).
+- **`chaindrain-api.fly.dev` is live** (Day 2). Production needs `NEXT_PUBLIC_API_BASE_URL=https://chaindrain-api.fly.dev` set in the Vercel dashboard (Production env) and a redeploy before authenticated reads (`/me`, `/watchlists`, `/admin/events`) work over the wire.
 
 ---
 
@@ -185,14 +188,26 @@ pnpm --filter @chaindrain/web dev
 | Sign-up creates `profiles` row with `role='user'` | ✓ (validated DB-side via 2 independent signups; trigger fires synchronously) |
 | Admin promotion path works | ✓ (`waz@canhav.com` flipped to `role='admin'` via `admin_grant`) |
 
-**Caveat:** the signup → `/me` round-trip has only been validated at the DB layer. Validating it over HTTP from prod requires a deployed API.
+## 9b. Day 2 KPI gate — status
+
+| KPI | Status |
+|---|---|
+| `chaindrain-api` deployed | ✓ (Fly, 2× machines, `iad`) |
+| Synthetic HMAC event lands via `/agent/events` | ✓ (event `bfafcafb-589b-4c6e-b9e5-f57bd6510432`, status auto-promoted to `corroborated`) |
+| Threat matrix shows ≥1 non-zero cell after refresh | ✓ (`liquid-staking-tokens` × `operational_compromise`, score 1.0) |
+| Admin triage UI lists pending events with Confirm/Retract | ⏳ Code shipped at `/admin/events`; smoke test pending Vercel redeploy with `NEXT_PUBLIC_API_BASE_URL` |
+| `/me` round-trip works over HTTP from prod | ⏳ Pending Vercel redeploy |
 
 ---
 
 ## 10. Where work paused at end of last session
 
-**Day 1 is closed.** The 2026-05-15 session confirmed Vercel green, validated `handle_new_user` end-to-end via two real signups, and granted the first admin (`waz@canhav.com`).
+**Day 2 is mostly closed.** The 2026-05-15 PM session deployed `chaindrain-api` to Fly, posted a synthetic HMAC-signed event end-to-end, refreshed `mv_threat_matrix` (now one non-zero cell), and built the admin triage UI at `/admin/events`.
 
-**The next session should pick up Day 2.** The most important blocking decision is **where the FastAPI runs in production** — without that, the live site can't exercise any authenticated path. Options on the table: deploy `apps/api` to Fly/Railway/Render, or rewrite the per-user routes as Next.js Route Handlers using `@supabase/ssr` and retire the FastAPI surface for those endpoints.
+**Two things remain before Day 2 is fully closed:**
+1. User adds `NEXT_PUBLIC_API_BASE_URL=https://chaindrain-api.fly.dev` to Vercel Production env and redeploys.
+2. Signed in as `waz@canhav.com`, visit `/admin/events`, Confirm or Retract the synthetic event, observe `mv_threat_matrix` change after `refresh_threat_matrix()`.
 
-Day 2 KPIs from the project plan: Comet agent posts a synthetic HMAC-signed event → threat matrix shows ≥1 non-zero cell → admin triage UI works.
+**Security follow-up not yet done:** the Supabase service-role key was pasted into the user's shell during setup. It is currently in `~/.zsh_history` and the Cascade transcript. Must be rotated (Supabase dashboard → API → Reset `service_role`) and the new value re-set on Fly via `flyctl secrets set SUPABASE_SERVICE_ROLE_KEY=<new> --app chaindrain-api`.
+
+**Day 3 work:** deploy `chaindrain-agent` worker (the Comet ingestion scraper), wire `AGENT_RUN_URL` on the API, schedule the daily Supabase Edge Function cron, optionally add preview-deploy CORS regex and Sentry DSNs.

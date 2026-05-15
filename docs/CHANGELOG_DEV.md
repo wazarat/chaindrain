@@ -154,3 +154,80 @@ None yet this session — the changes are doc-only and a database state mutation
    - Admin triage UI: list pending events, approve/reject, see status flip.
 3. **Wire `/me` round-trip from prod** once the API has a public URL — this is the actual smoke test for the auth → profile path over the wire.
 4. (Optional) Consider seeding 1–2 synthetic `events` rows tied to known companies so the threat matrix has something to render before the Comet agent is wired.
+
+---
+
+## 2026-05-15 (PM) — Day 2: chaindrain-api on Fly, admin triage UI, KPIs #1 & #2 met
+
+### Session goals
+1. Deploy `chaindrain-api` (FastAPI) to Fly.io.
+2. Wire production Vercel web app at the new API URL.
+3. Satisfy Day 2 KPIs: synthetic HMAC event → ≥1 non-zero threat-matrix cell → admin triage UI.
+4. Defer the Comet agent worker deployment to Day 3.
+
+### What was done
+
+#### a. Fly install + auth
+- Installed `flyctl` via the official curl installer → `~/.fly/bin/flyctl v0.4.52`.
+- User signed up to Fly via browser-driven `flyctl auth login`; account: `waz@canhav.com`.
+- An earlier attempt to connect the Fly GitHub integration at the repo root failed because no Dockerfile exists there — Fly autodetect bailed with `Could not detect runtime or Dockerfile`. We **destroyed the auto-created `chaindrain` app** and switched to CLI-driven deploys from `apps/api/`.
+
+#### b. Created `chaindrain-api`
+- `flyctl apps create chaindrain-api --org personal`.
+- Uses the pre-existing `apps/api/Dockerfile` (multi-stage, Python 3.12-slim, `uv pip install --system -e .`, CMD `uvicorn app.main:app --host 0.0.0.0 --port 8000 --proxy-headers`) and `apps/api/fly.toml` (region `iad`, internal_port 8000, 2× shared-cpu-1x 512 MB machines, healthcheck `GET /healthz`).
+- Generated `AGENT_HMAC_SECRET` (64-char hex, stored 1Password-side).
+- Set 5 Fly secrets via `flyctl secrets set`: `SUPABASE_URL`, `SUPABASE_ANON_KEY` (fetched via Supabase MCP `get_publishable_keys`), `SUPABASE_SERVICE_ROLE_KEY`, `AGENT_HMAC_SECRET`, `ALLOWED_ORIGINS=https://chaindrain.vercel.app` (prod-only CORS per session decision).
+- `flyctl deploy --remote-only` succeeded. App is at `https://chaindrain-api.fly.dev`.
+- Smoke tests: `/healthz` 200 (`environment: production`), `/sectors` returns 7, `/me` (no token) 401, `/threat-matrix` returns 36 subsectors / 7 evidence classes / 0 cells.
+
+#### c. Day 2 KPI #1 — synthetic HMAC event ingestion
+- Added `scripts/post_synthetic_event.py`: builds an `EventDraft` with 2 source URLs, HMAC-SHA256 signs the body, POSTs to `/agent/events` with `x-chaindrain-signature`.
+- Posted against Lido (`1bc274f9-2b0a-4e15-bdea-57ad5a0c3a72`, subsector `liquid-staking-tokens`) with `evidence_class=operational_compromise`, `severity=high`.
+- Response 200: event `bfafcafb-589b-4c6e-b9e5-f57bd6510432` created, status auto-promoted `unverified → corroborated` (≥2 sources rule in `events_service.create_event_with_relations`), 2 `event_sources` rows, 1 `event_companies` row.
+- (Compat fix: replaced `from datetime import UTC` with `timezone.utc` so the script runs on Python 3.9 / 3.10 system installs too.)
+
+#### d. Day 2 KPI #2 — threat matrix non-zero cell
+- Ran `select public.refresh_threat_matrix();` via Supabase MCP.
+- `mv_threat_matrix` now has 1 row with `event_count=1`, `unique_companies=1`, `severity_sum=4`, `score=1.0000` at (`liquid-staking-tokens`, `operational_compromise`).
+- `GET /threat-matrix` from prod returns the same: 1 nonzero cell.
+- Verified `v_threat_components` excludes `status = 'retracted'` events — confirms admin retraction will drop the score on next refresh.
+
+#### e. Day 2 KPI #3 — admin triage UI
+- Backend: added `status: EventStatus | None` query param to `GET /events` in `apps/api/app/routers/events.py` so the admin UI can filter by exact status. Shipped in the same Fly deploy.
+- Frontend (App Router):
+  - `apps/web/src/app/(app)/admin/events/page.tsx`: server component, admin-gated via `profiles.role`. Tabs for `pending | unverified | corroborated | confirmed | retracted` (default `pending` = `unverified ∪ corroborated`). Renders title, summary preview, severity / evidence-class / status badges, primary company slug, detected_at. Lists up to 100 most recent.
+  - `apps/web/src/app/(app)/admin/events/triage-actions.tsx`: client component with Confirm / Retract buttons. Reads the user's Supabase session, calls `PATCH ${NEXT_PUBLIC_API_BASE_URL}/events/{id}/status` with bearer token, then `router.refresh()`. Buttons disabled for terminal statuses.
+  - Sidebar `/admin` link already covers nested routes via `pathname.startsWith(item.href + "/")` — no change needed.
+- Web `pnpm typecheck` passes.
+
+#### f. Phase 2 hand-off
+- User must add `NEXT_PUBLIC_API_BASE_URL=https://chaindrain-api.fly.dev` to Vercel Production env and redeploy.
+- Once redeployed, signed in as `waz@canhav.com` (admin), `/admin/events` will show the synthetic event under "Pending" with Confirm / Retract actions.
+
+### Files created
+- `scripts/post_synthetic_event.py`
+- `apps/web/src/app/(app)/admin/events/page.tsx`
+- `apps/web/src/app/(app)/admin/events/triage-actions.tsx`
+
+### Files modified
+- `apps/api/app/routers/events.py` — added `status` query-param filter to `list_events`; imported `EventStatus` from models.
+- `docs/CHANGELOG_DEV.md` — this entry.
+- `docs/AI_CONTEXT.md` — §3 (chaindrain-api now deployed), §7 (note new Fly secret), §10 (Day 2 closed except admin-UI smoke test).
+
+### Live infrastructure status
+| Service | URL | Status |
+|---|---|---|
+| Web | https://chaindrain.vercel.app | Live, pending redeploy with new env var |
+| FastAPI | https://chaindrain-api.fly.dev | Live, 2× shared-cpu-1x machines in `iad` |
+| Supabase | uftbynydcmzfggltyjao.supabase.co | Live |
+| Comet agent | — | Not deployed (Day 3) |
+
+### Security follow-ups (must do)
+- **Rotate Supabase service-role key.** It was pasted into the user's shell during setup, so it now exists in `~/.zsh_history`, IDE history, and the Cascade conversation transcript (i.e. Anthropic logs). Supabase dashboard → API → Reset `service_role` key → re-run `flyctl secrets set SUPABASE_SERVICE_ROLE_KEY=<new> --app chaindrain-api` → `flyctl machines restart --app chaindrain-api`.
+
+### Next steps for the next session (Day 3)
+1. **Deploy `chaindrain-agent` to Fly** (scaffold + `fly.toml` + Dockerfile already in `apps/agent/`). Will need its own `AGENT_HMAC_SECRET` matching the API's, plus any source-specific config in `apps/agent/app/sources.json`.
+2. **Wire `AGENT_RUN_URL=https://chaindrain-agent.fly.dev/run` on the API** so `/admin/agent_runs/trigger` works end-to-end (the "Run agent now" button on `/admin` will no longer 503).
+3. **Schedule the daily cron** via the existing `supabase/functions/cron-trigger` edge function (deploy it, set `AGENT_RUN_URL` + `AGENT_HMAC_SECRET` secrets on Supabase, enable cron at 13:00 UTC).
+4. **Vercel preview CORS** (optional): add `ALLOWED_ORIGIN_REGEX` to `Settings` + switch `CORSMiddleware` to `allow_origin_regex` when set, so preview deploys can hit the API.
+5. **Sentry DSNs** for API + agent (env vars already plumbed).

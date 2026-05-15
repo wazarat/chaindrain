@@ -106,3 +106,29 @@ If a fix is needed (e.g., the `search_path` fixes in `harden_security`), it goes
 **Decision:** The AI assistant does not add, remove, or modify code comments or docstrings unless the user explicitly requests it.
 
 **Rationale:** User preference. Comments are part of the original author's expressive intent.
+
+---
+
+## 10. Fly deploys for `chaindrain-api` go via CLI from `apps/api/`, not the GitHub integration
+
+**Decision:** Production deploys to `chaindrain-api.fly.dev` are issued by `flyctl deploy --remote-only` from inside `apps/api/`. The Fly GitHub auto-deploy integration is **not** used.
+
+**Rationale:** Fly's GitHub integration runs `flyctl launch plan propose` at the **repo root** of the connected repository. There is no Dockerfile at the chaindrain repo root — the Dockerfile lives in `apps/api/`. Fly's autodetector cannot see it from the root and fails with `Could not detect runtime or Dockerfile`. A first attempt to use the integration produced exactly that failure and created an empty `chaindrain` app on Fly, which we then destroyed.
+
+The CLI-from-subfolder approach uses the committed `apps/api/Dockerfile` + `apps/api/fly.toml` directly. The same pattern will apply to `chaindrain-agent` (deploy from `apps/agent/`) when that app comes up on Day 3.
+
+If the GitHub integration is ever desired, it would need a per-app Fly-side "source directory" configuration (or a Dockerfile/`fly.toml` at the repo root, which would conflict with the monorepo structure). Not worth the complexity right now.
+
+**See:** `apps/api/fly.toml`, `apps/api/Dockerfile`, the destroyed `chaindrain` app on Fly, the 2026-05-15 PM CHANGELOG entry.
+
+---
+
+## 11. Prod-only CORS on the FastAPI (no preview origin support)
+
+**Decision:** `ALLOWED_ORIGINS` on `chaindrain-api` is set to exactly `https://chaindrain.vercel.app` in prod. No regex support. Vercel preview deploys (`https://chaindrain-git-*.vercel.app`) cannot call the API from a browser.
+
+**Rationale:** `CORSMiddleware` with `allow_credentials=True` rejects `*` as `allow_origins`. Supporting preview URLs requires either an explicit list (preview hostnames are not predictable) or `allow_origin_regex` (small code change in `apps/api/app/config.py` + `app/main.py`). Day 2 does not need preview testing of authenticated paths; we'll add the regex setting on Day 3 if preview testing becomes necessary.
+
+Dev still works because local `apps/api/.env` keeps `ALLOWED_ORIGINS=http://localhost:3000`.
+
+**See:** `apps/api/app/main.py` `CORSMiddleware` block, `apps/api/app/config.py:cors_origins`, prod Fly secret `ALLOWED_ORIGINS`.

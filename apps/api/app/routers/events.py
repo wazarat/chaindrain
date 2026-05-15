@@ -17,6 +17,7 @@ from app.auth import CurrentUser, get_current_user
 from app.models import (
     Event,
     EventDraft,
+    EventStatus,
     EventStatusPatch,
     EventWithRelations,
     EvidenceClass,
@@ -48,6 +49,7 @@ async def list_events(
     subsector_id: str | None = None,
     evidence_class: EvidenceClass | None = None,
     severity: Severity | None = Query(default=None, description="Minimum severity"),
+    status: EventStatus | None = Query(default=None, description="Exact status match"),
     since: datetime | None = None,
     limit: int = Query(default=50, le=200),
     cursor: str | None = Query(default=None, description="ISO timestamp cursor (detected_at)"),
@@ -65,6 +67,8 @@ async def list_events(
     if severity:
         allowed = [s.value for s, order in _SEVERITY_ORDER.items() if order >= _SEVERITY_ORDER[severity]]
         query = query.in_("severity", allowed)
+    if status:
+        query = query.eq("status", status.value)
     if since:
         query = query.gte("detected_at", since.isoformat())
     if cursor:
