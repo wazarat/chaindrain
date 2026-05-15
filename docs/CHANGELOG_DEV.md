@@ -100,3 +100,57 @@ Complete the Day 1 KPI gate from the project plan:
 3. **Admin promotion.** Run `select public.admin_grant('user@email.com');` via the Supabase MCP. Re-fetch `/me` and confirm `role='admin'`.
 4. **Day 2 kickoff.** Day 2 KPIs from the project plan: Comet agent scaffold can post a synthetic event via HMAC; threat matrix shows ≥1 non-zero cell; admin triage UI works.
 5. (Optional cleanup) Decide whether to keep the `companies_seed_batches/` SQL files in-tree; they're useful as a fallback but `import_from_google_sheets.py` is the canonical pipeline now.
+
+---
+
+## 2026-05-15 — Day 1 KPI gate closed: Vercel green, signup trigger validated, first admin granted
+
+### Session goals
+Resume from the prior session's pause point: confirm Vercel build of `7a85ca1`, then close the remaining Day 1 KPIs (signup round-trip + admin promotion).
+
+### What was done
+
+#### a. Vercel deploy of `7a85ca1` confirmed green
+- User confirmed `chaindrain.vercel.app` now renders the landing page after the simplified `apps/web/vercel.json` from the prior session. The `cd ../..` removal was the fix.
+
+#### b. `handle_new_user` trigger validated end-to-end
+- Queried `auth.users ⨝ public.profiles`. Found `wazarat100@gmail.com` (signed up `2026-05-14 18:27:56`, confirmed 14 s later) with `profile_created_at` matching `auth_created_at` to the second — confirming the trigger fired synchronously with the auth user insert and produced `role='user'`.
+- Mid-session, user signed up a second account `waz@canhav.com` on the live deploy; same pattern observed (`auth_created_at` `2026-05-15 16:15:44`, profile created same second, email confirmed 14 s later, `role='user'`, `display_name='waz_admin'`). Two independent signups now exercise the trigger.
+
+#### c. First admin granted
+- Ran `select public.admin_grant('waz@canhav.com');` via Supabase MCP. Re-queried profile: `role='admin'`, `updated_at='2026-05-15 16:16:39'`. The grant works.
+- Note: `role` lives on `public.profiles` and is read by the SECURITY DEFINER `is_admin(uuid)` function used in RLS — it is **not** a JWT claim. Promotion takes effect immediately for the next request; no sign-out/in needed.
+
+#### d. Day 1 KPI gate
+| KPI | Status |
+|---|---|
+| All migrations applied | ✓ |
+| ≥500 companies imported | ✓ (499 unique slugs) |
+| RLS verified clean | ✓ |
+| `/healthz` returns 200 | ✓ |
+| Web preview loads (Vercel) | ✓ (this session) |
+| Sign-up creates `profiles` row with `role='user'` | ✓ (this session, 2 independent signups) |
+| `admin_grant` flips a profile to `role='admin'` | ✓ (this session) |
+
+### Files created
+None.
+
+### Files modified
+- `docs/CHANGELOG_DEV.md` — this entry.
+- `docs/AI_CONTEXT.md` — KPI table flipped to all-green; §10 ("where work paused") updated to reflect Day 1 closed.
+
+### Commits
+None yet this session — the changes are doc-only and a database state mutation (`admin_grant`). Will commit the doc updates.
+
+### Open caveats / known gaps
+- **API not deployed.** `NEXT_PUBLIC_API_BASE_URL` is empty in Vercel, so the production web app cannot call `/me`, `/watchlists`, etc. against a real backend. The signup → `/me` round-trip has been validated at the database layer (trigger + grant) but not over HTTP from prod. Either deploy `apps/api` or stand up a stub before any feature that requires authenticated reads from the live site.
+- One pre-existing test account `wazarat100@gmail.com` remains at `role='user'`. Leave or promote per preference.
+
+### Next steps for the next session
+1. **Decide where the API runs in prod.** Options: Fly.io / Railway / Render for FastAPI; or rewrite the per-user reads as Next.js Route Handlers using `@supabase/ssr` and retire the FastAPI surface for those endpoints. Until this is settled, the deployed site is read-only marketing.
+2. **Day 2 KPIs (from project plan):**
+   - Comet agent scaffold can post a synthetic event via HMAC-signed request to `/agent/events`.
+   - Threat matrix shows ≥1 non-zero cell after that synthetic event.
+   - Admin triage UI: list pending events, approve/reject, see status flip.
+3. **Wire `/me` round-trip from prod** once the API has a public URL — this is the actual smoke test for the auth → profile path over the wire.
+4. (Optional) Consider seeding 1–2 synthetic `events` rows tied to known companies so the threat matrix has something to render before the Comet agent is wired.

@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-15 by the prior Cascade session.
+**Last updated:** 2026-05-15 (Day 1 KPI gate closed).
 **Purpose:** Single source of truth for an AI assistant starting a new chat. Read this first, then `DECISIONS.md`, then `CHANGELOG_DEV.md`.
 
 ---
@@ -168,7 +168,8 @@ pnpm --filter @chaindrain/web dev
     "regions": ["iad1"]
   }
   ```
-- **As of `7a85ca1`, the latest deploy result was not yet confirmed by the user.** First thing to do in a new session: ask the user whether `chaindrain.vercel.app` now renders the landing page, or paste the latest Vercel build log.
+- **`7a85ca1` is live.** `chaindrain.vercel.app` renders the landing page. The simplified `vercel.json` (no `cd ../..`) was the fix.
+- **API is not deployed.** `NEXT_PUBLIC_API_BASE_URL` in Vercel is empty, so the production web app cannot reach `/me`, `/watchlists`, etc. Authenticated reads from the live site need a deployed API (Fly/Railway/Render for FastAPI, or rewrite as Next.js Route Handlers using `@supabase/ssr`).
 
 ---
 
@@ -180,15 +181,18 @@ pnpm --filter @chaindrain/web dev
 | ≥500 companies imported | ✓ (499 unique slugs) |
 | RLS verified clean | ✓ (audit + advisor) |
 | `/healthz` returns 200 | ✓ |
-| Web preview loads | ✓ locally; Vercel pending confirmation |
-| User signs up → `/me` returns `{role: 'user'}` | ⏳ Not yet manually tested end-to-end |
-| Admin promotion path works | ⏳ Awaiting first user sign-up to run `select admin_grant('email')` |
+| Web preview loads | ✓ (Vercel green on `7a85ca1`) |
+| Sign-up creates `profiles` row with `role='user'` | ✓ (validated DB-side via 2 independent signups; trigger fires synchronously) |
+| Admin promotion path works | ✓ (`waz@canhav.com` flipped to `role='admin'` via `admin_grant`) |
+
+**Caveat:** the signup → `/me` round-trip has only been validated at the DB layer. Validating it over HTTP from prod requires a deployed API.
 
 ---
 
 ## 10. Where work paused at end of last session
 
-The Vercel deploy was retriggered by commit `7a85ca1` (simplified `apps/web/vercel.json`). The user had not yet reported back whether that build succeeded. **Resume by asking for the build status.**
+**Day 1 is closed.** The 2026-05-15 session confirmed Vercel green, validated `handle_new_user` end-to-end via two real signups, and granted the first admin (`waz@canhav.com`).
 
-If Vercel is green: move to manual sign-up test and admin promotion to close Day 1.
-If Vercel is still failing: read the new build log carefully — the previous failure was silent (only 7 log lines), which suggested the old `cd ../..` buildCommand was the culprit.
+**The next session should pick up Day 2.** The most important blocking decision is **where the FastAPI runs in production** — without that, the live site can't exercise any authenticated path. Options on the table: deploy `apps/api` to Fly/Railway/Render, or rewrite the per-user routes as Next.js Route Handlers using `@supabase/ssr` and retire the FastAPI surface for those endpoints.
+
+Day 2 KPIs from the project plan: Comet agent posts a synthetic HMAC-signed event → threat matrix shows ≥1 non-zero cell → admin triage UI works.
