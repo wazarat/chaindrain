@@ -17,8 +17,13 @@ function getPg() {
   if (!global.__chaindrainPg) {
     global.__chaindrainPg = postgres(url, {
       prepare: false,
-      max: 5,
-      idle_timeout: 20,
+      max: 1,
+      idle_timeout: 4,
+      connect_timeout: 10,
+      max_lifetime: 60 * 5,
+      connection: {
+        application_name: "chaindrain-mvp",
+      },
     });
   }
   return global.__chaindrainPg;
