@@ -591,3 +591,105 @@ Legacy `chaindrain.vercel.app` (`apps/web`) build that auto-triggered from the P
 
 ### Next steps
 **Phase 2 — SCORE leg.** Per `docs/AI_CONTEXT.md` §7 Phase 2 and `chaindrain_export/CURSOR_PROMPT.md` "PHASE 2": KPI cards (4) + filter bar (sector/risk_tier/coverage_tier/oracle/chain/bridge) + sortable HTML table over `chaindrain.mvp_master` (50/page, default `risk_score DESC NULLS LAST`) + Radix `<Dialog>` row-click drawer. Routes: `GET /api/entities` (paginated, zod-validated), `GET /api/entities/[entity_id]`. All SQL through `apps/mvp/src/lib/db/queries.ts` — no inline SQL in route handlers. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
+
+---
+
+## 2026-05-16 (PM #4) — Phase 2: SCORE leg dashboard, /api/entities, drawer — locally complete
+
+### Session goals
+Phase 2 from `docs/AI_CONTEXT.md` §7 — build the SCORE leg dashboard at `/` per `chaindrain_export/CURSOR_PROMPT.md` "PHASE 2". 4 KPI cards + filter bar + sortable mvp_master table + Radix `<Dialog>` row-click drawer + `GET /api/entities` (paginated, zod-validated) + `GET /api/entities/[entity_id]`. All SQL through `apps/mvp/src/lib/db/queries.ts`. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
+
+### What was done
+
+#### a. Three new deps
+`pnpm add @radix-ui/react-dialog clsx lucide-react` — 22 packages added in 2.3 s through the existing `~/Library/pnpm/store`. Versions pinned: `@radix-ui/react-dialog 1.1.15`, `clsx 2.1.1`, `lucide-react 0.435.0`. No `tailwind-merge` — Tailwind v4 + clsx is enough for this dashboard. The peer-dep warnings printed by pnpm all originate from the legacy `apps/web` (`next 15.0.0-rc.0` ↔ React 19 mismatch) and are unrelated; `apps/web` is on death row anyway.
+
+#### b. Queries layer (`apps/mvp/src/lib/db/queries.ts`)
+Replaced the Phase 1 stub. New exports, all using the raw `sql` (postgres-js) tagged-template client from `src/lib/db/index.ts`:
+- `countIdentities()` — kept for `/api/health`.
+- `getKpiSummary()` — single SELECT with COUNT FILTER + SUM. Returns `{ total_entities, critical_count, high_count, total_tvl_usd, total_blast_radius_usd }`.
+- `getFilterOptions()` — four parallel SELECTs in `Promise.all`: distinct sectors from `identity`, distinct unnest of `oracle_providers` / `bridge_dependencies` from `dependency_fingerprint`, and distinct unnest of `chain_deployments` from `identity` ordered by deployment count DESC. Returns the static enum lists `risk_tiers` + `coverage_tiers` inline (no need to `SELECT DISTINCT` them since they're constrained taxonomies).
+- `getEntities({ filters, sortField, sortDirection, page, pageSize })` — paginated SELECT against `chaindrain.mvp_master`. Filters compose via a small `buildWhereClause` helper that returns a postgres-js sql fragment: scalar columns use `= ANY(${array}::text[])`, array columns use `&& ${array}::text[]` (overlap, hits the existing GIN indexes). `name ILIKE` for free-text search. Sort field is whitelisted via a `SORTABLE` map; direction is normalised to `ASC`/`DESC` literally. Default `ORDER BY risk_score DESC NULLS LAST, name ASC`. `LIMIT / OFFSET` are parameterised. The total count for pagination runs a second `COUNT(*)` with the same WHERE clause, in series after the row fetch (could be parallelised; not bottleneck-y at 875 rows).
+- `getEntityById(entity_id)` — `SELECT * FROM chaindrain.mvp_master WHERE entity_id = $1 LIMIT 1`.
+
+Why raw `sql` over Drizzle's view query builder: `pnpm db:introspect` flattens Postgres `text[]` columns on the view definition to plain `text()` in the generated `schema.ts` (drizzle-kit limitation as of 0.31.10). Trying to use the typed view object would lose array semantics. postgres-js natively decodes Postgres arrays into JS arrays, so the runtime data is correct — the types come from hand-written `EntityRow` / `EntityDetail` interfaces.
+
+Smoke-tested live before wiring the API: `pnpm exec tsx --env-file=.env.local scripts/smoke-queries.ts` (script later deleted) printed `KPI: { total_entities: 875, critical_count: 59, high_count: 69, total_tvl_usd: 828803713287.118…, total_blast_radius_usd: 828803713287.118… }`, `filter options counts: { sectors: 22, oracles: 16, chains: 182, bridges: 1 }`, `critical total: 59`, top 5 = `RealT (0.8532), Arbitrum Bridge (0.8074), Binance (0.8032), Binance (Binance On-Ramp) (0.8032), Binance (Validator Operations) (0.8032)`. ✓ all match the AI_CONTEXT §5 ground-truth values.
+
+#### c. zod schemas (`apps/mvp/src/lib/api/schemas.ts`)
+- `entitiesQuerySchema` — accepts `page` / `pageSize` (coerced numbers, page≥1, pageSize 1–200, defaults 1/50), `sort` (enum), `direction` (enum), `search` (≤200 chars), and six list filters (`sectors`, `riskTiers`, `coverageTiers`, `oracles`, `chains`, `bridges`). List filters accept either CSV string (`"critical,high"`) or repeated query params (Next's URLSearchParams will give an array if `riskTiers=critical&riskTiers=high` is used). The `csvEnumList` helper applies `z.enum(values)` after splitting so invalid risk_tier values 400 with structured zod issues. Empty strings are stripped to `undefined`.
+- `entityIdParamsSchema` — `z.object({ entity_id: z.string().uuid() })`.
+- `parseSearchParams(URLSearchParams)` — utility used in the route handler to flatten a `URLSearchParams` into an `EntitiesQueryInput`-compatible object preserving repeated keys as arrays.
+
+#### d. API routes
+- `apps/mvp/src/app/api/entities/route.ts` — `GET` only. Reads URL → `parseSearchParams` → `entitiesQuerySchema.parse` → `getEntities(...)`. Returns `{ ok: true, data: rows, pagination: { page, pageSize, total, totalPages } }`. `ZodError` → 400 with `{ ok: false, error: 'invalid_query', issues: [...] }`. Anything else → 500 + `console.error` per CURSOR_PROMPT.md "Coding standards".
+- `apps/mvp/src/app/api/entities/[entity_id]/route.ts` — `GET` only. `params` is a Promise in Next 16 App Router; awaits then parses with `entityIdParamsSchema`. 404 if not found, 400 on bad UUID, 500 fallback.
+
+Both routes are `runtime: 'nodejs'` + `dynamic: 'force-dynamic'` (no caching — the data changes when the seed reloads or, eventually, when the DETECT leg writes alerts).
+
+#### e. UI components
+- `src/lib/utils.ts` — `cn`, `formatUsdCompact`, `formatUsdFull`, `formatNumber`, `formatRiskScore`, `formatDate`, `riskTierClass`, `riskScoreColor`, `coverageTierClass`. All money fields go through `Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD' })` per spec.
+- `src/lib/url-state.ts` — `buildSearchString(params)` (drops empty values, joins arrays with comma) + `parseList(value)` (splits comma-separated URL params back into arrays).
+- `src/components/kpi-cards.tsx` — server component. 4 cards in a responsive grid (1 → 2 → 4 across sm/lg). Critical (red), High (orange), Total TVL (emerald), Total Blast Radius (blue). Lucide icons.
+- `src/components/multi-select.tsx` — client. Headless multi-select with click-outside / Escape handling, search box auto-shown when options.length > 8, selected count chip, X-to-clear inside the trigger. Used by the filter bar.
+- `src/components/filter-bar.tsx` — client. Reads filter values from `useSearchParams()` (single source of truth), pushes via `router.push('/?' + buildSearchString(...), { scroll: false })` inside a `useTransition` so the browser doesn't lose focus / scroll. Page resets to 1 on every filter change. Free-text name search has its own form (Apply button or Enter); local state is synced with URL via the React 19 "adjust state during render" pattern (`if (lastUrlSearch !== current.search) { setLastUrlSearch(current.search); setSearchInput(current.search); }`) — `useEffect` would have triggered the new `react-hooks/set-state-in-effect` lint error. Clear-all wipes all params and pushes to `/`.
+- `src/components/entities-table.tsx` — client. `<table>` over `EntityRow[]`. Columns: name / sector / TVL ($ compact) / risk_score (colored) / risk_tier pill / coverage_tier pill / oracle chips / bridge chips / blast_radius ($ compact). Headers are buttons that flip sort direction or switch field (default new field = DESC except for name/sector which default ASC). Rows are `role="button"` with Enter/Space keyboard handling and click → opens `<EntityDrawer entityId={id}>`. Pagination is prev/next at the bottom. `useTransition` on every navigation so the table fades to 70 % opacity during the SSR round-trip, masking the lag.
+- `src/components/entity-drawer.tsx` — client. Radix `Dialog.Root` with right-side slide-in (`max-w-2xl`, `inset-y-0 right-0`), backdrop blur. Header has `Dialog.Title` (entity name) + `Dialog.Description` (sector) + `Dialog.Close`. Body fetches `/api/entities/[entity_id]` on mount. **State reset is via `key={entityId}` on a `<DrawerInner>` child** — every time the user clicks a different row the inner component remounts with fresh `loading`/`data`/`error` state. No effect-based reset, no lint complaints. The body groups all 48 mvp_master fields into 5 sections: Identity / Contract Fingerprint / Audits & Bounties / Dependencies / Risk Factors. Top of body is a 4-cell Stat strip: risk_score / risk_tier / coverage / state.
+
+#### f. Page (`src/app/page.tsx`) + layout
+- `page.tsx` — server component. `searchParams` is a `Promise<Record<…>>` in Next 16 App Router; awaits then runs through `entitiesQuerySchema.safeParse` (falls back to defaults on parse failure rather than 500-ing the page). Calls `getKpiSummary`, `getFilterOptions`, `getEntities` in parallel via `Promise.all`. Renders header → `<KpiCards>` → `<FilterBar>` → `<EntitiesTable>` → footer with `/api/health` link. `runtime: 'nodejs'`, `dynamic: 'force-dynamic'`.
+- `layout.tsx` — dropped the Geist font setup that the scaffold included (slowed down dev start with Google Fonts fetch over the limited sandbox network) in favour of system stack via `--font-sans` in `globals.css`. Sets the page title to `Chaindrain — Threat Detection`.
+- `globals.css` — kept Tailwind v4 `@import "tailwindcss"` + the `@theme inline` block, swapped foreground/background to zinc-50/zinc-950 and locked `font-family` to a system stack.
+
+#### g. Lint fixes
+- React 19 + the new `react-hooks/set-state-in-effect` rule fired on two files: `entity-drawer.tsx` (initial draft did `setData(null); setError(null)` inside a `useEffect`) and `filter-bar.tsx` (initial draft did `useEffect(() => setSearchInput(current.search), [current.search])`). Fixed via key-based remount in the drawer and the "adjust state during render" pattern in the filter bar (see §e above).
+- Removed a stale `// eslint-disable-next-line no-var` directive in `src/lib/db/index.ts` that the new ESLint flagged as unused.
+- Added `src/lib/db/schema.ts` and the rest of drizzle-kit's introspect output (`relations.ts`, `meta/**`, `0000_*.sql`) to `eslint.config.mjs` `globalIgnores` since those files are regenerated by `pnpm db:introspect` and we don't want a `'pgTable' is defined but never used` warning to break CI lint.
+
+#### h. Local verification
+- `pnpm typecheck` clean.
+- `pnpm lint` clean.
+- `pnpm build` clean: 5.9 s. Routes registered: `ƒ /`, `ƒ /api/entities`, `ƒ /api/entities/[entity_id]`, `ƒ /api/health`, `○ /_not-found`.
+- Dev server on :3010, ran 5 acceptance curls:
+  - `GET /api/entities?riskTiers=critical&pageSize=5` → `{ pagination: { total: 59, totalPages: 12 }, data: [RealT, Arbitrum Bridge, Binance, Binance (Binance On-Ramp), Binance (Validator Operations)] }`. **Acceptance ✓** — 59 critical, RealT top.
+  - `GET /api/entities/69f29121-…` (RealT's UUID) → 200, 48 keys, `chain_deployments: ['xDai']`, `oracle_providers: ['Chainlink']`.
+  - `GET /api/entities?sectors=Tokenized%20Real-World%20Assets&pageSize=5` → 28 rows, RealT top. URL-encoded sector with embedded space + ampersand-free name worked.
+  - `GET /api/entities?oracles=Chainlink&riskTiers=critical&sort=tvl_usd&direction=desc&pageSize=3` → 13 rows, Binance Validator Operations / Coinbase Validator Operations / Babylon by TVL DESC.
+  - `GET /api/entities?page=foo` → `400 { ok: false, error: 'invalid_query', issues: [{ code: 'invalid_type', expected: 'number', received: 'nan', path: ['page'] }] }`.
+  - `GET /api/entities/not-a-uuid` → `400 { ok: false, error: 'invalid_entity_id', issues: [{ validation: 'uuid', code: 'invalid_string', path: ['entity_id'] }] }`.
+- SSR dashboard: `GET /?riskTiers=critical` → 145 KB HTML in 0.42 s after first compile. Grepped output confirms "RealT", "0.8532", "Critical risk", "Sorted by risk_score", and `Showing 1–50 of 59 entities` all rendered.
+
+### Files created
+- `apps/mvp/src/lib/api/schemas.ts`
+- `apps/mvp/src/lib/utils.ts`
+- `apps/mvp/src/lib/url-state.ts`
+- `apps/mvp/src/app/api/entities/route.ts`
+- `apps/mvp/src/app/api/entities/[entity_id]/route.ts`
+- `apps/mvp/src/components/kpi-cards.tsx`
+- `apps/mvp/src/components/multi-select.tsx`
+- `apps/mvp/src/components/filter-bar.tsx`
+- `apps/mvp/src/components/entities-table.tsx`
+- `apps/mvp/src/components/entity-drawer.tsx`
+
+### Files modified
+- `apps/mvp/package.json` — +3 deps.
+- `apps/mvp/src/app/page.tsx` — replaced Next scaffold with the dashboard server component.
+- `apps/mvp/src/app/layout.tsx` — system fonts, new title.
+- `apps/mvp/src/app/globals.css` — system font stack, zinc palette.
+- `apps/mvp/src/lib/db/index.ts` — dropped stale eslint-disable.
+- `apps/mvp/src/lib/db/queries.ts` — Phase-2 query surface.
+- `apps/mvp/eslint.config.mjs` — ignore drizzle introspect output.
+- `pnpm-lock.yaml` — +22 packages.
+- `docs/AI_CONTEXT.md` — flipped Phase 2 to DONE locally; rewrote §3 file inventory + §7 Phase 2 + §8 handoff to Phase 3.
+- `docs/CHANGELOG_DEV.md` — this entry.
+
+### Pending (manual user)
+- Push to `main` → Vercel auto-deploys `chaindrain-mvp.vercel.app`.
+- Smoke `https://chaindrain-mvp.vercel.app/?riskTiers=critical` and confirm 59 rows + RealT top in the live HTML.
+- Phase 3 prep: provision a free Etherscan API key (`https://etherscan.io/myapikey`) and generate `CRON_SECRET` (e.g. `openssl rand -hex 32`). Both go into Vercel Production env before Phase 3 ships.
+
+### Commits
+- (pending) `phase 2: SCORE leg — KPI cards + filter bar + sortable mvp_master table + entity drawer + /api/entities`
+
+### Next steps
+**Phase 3 — DETECT leg.** Per `docs/AI_CONTEXT.md` §7 Phase 3 and `chaindrain_export/CURSOR_PROMPT.md` "PHASE 3": new `chaindrain.alert` table + 5 free-source pollers (stablecoin-depeg, oracle-deviation, bridge-pause, admin-tx, tvl-drop) + Vercel Cron (`*/5 * * * *`) + vitest unit tests. Acceptance: synthetic USDC=0.97 → critical alert with `fanout_count > 50`. Worker also runnable locally as `tsx workers/poll-signals.ts`.

@@ -5,7 +5,6 @@ import * as schema from "./schema";
 const url = process.env.DATABASE_URL;
 
 declare global {
-  // eslint-disable-next-line no-var
   var __chaindrainPg: ReturnType<typeof postgres> | undefined;
 }
 

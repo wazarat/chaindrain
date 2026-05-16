@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 1 DONE ✓** (`/api/health` green locally AND on `chaindrain-mvp.vercel.app`). Ready for Phase 2 (SCORE leg).
+**Last updated:** 2026-05-16 — **Phase 2 DONE ✓ (locally)**. SCORE leg dashboard renders; `/api/entities?riskTiers=critical` returns 59 rows with RealT (`risk_score=0.8532`) at top. `pnpm build` clean. Ready for production push + Phase 3 (DETECT leg).
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -46,14 +46,19 @@ Single-tenant, IP-allowlisted on Vercel. **No auth in v1.**
 chaindrain/
 ├── apps/
 │   ├── web/        # legacy Next.js 15.0.0-rc.0 — frozen, will be removed in a Phase 6 cleanup
-│   └── mvp/        # Phase 1 — Next.js 16.2.6, installed, /api/health green locally
-│       ├── src/app/{layout,page}.tsx, globals.css, favicon.ico   ← scaffold defaults
+│   └── mvp/        # Phase 1+2 — Next.js 16.2.6, dashboard renders, prod build clean
+│       ├── src/app/layout.tsx, globals.css, page.tsx, favicon.ico   ← Phase 2 — server-rendered SCORE dashboard
 │       ├── src/app/api/health/route.ts   ← Phase 1 — Drizzle count, returns { ok: true, count }
+│       ├── src/app/api/entities/route.ts                ← Phase 2 — paginated, zod-validated query params
+│       ├── src/app/api/entities/[entity_id]/route.ts    ← Phase 2 — single mvp_master row, zod-validated UUID
+│       ├── src/components/{kpi-cards,filter-bar,multi-select,entities-table,entity-drawer}.tsx  ← Phase 2 UI
 │       ├── src/lib/supabase/{server,client}.ts   ← service-role + anon clients on `chaindrain` schema
-│       ├── src/lib/db/{index,queries,schema,relations}.ts + meta/   ← Drizzle pg client + introspect output
+│       ├── src/lib/db/{index,queries,schema,relations}.ts + meta/   ← queries.ts is the ONLY SQL surface; routes import from it
+│       ├── src/lib/api/schemas.ts                       ← Phase 2 — entitiesQuerySchema + entityIdParamsSchema (zod)
+│       ├── src/lib/{utils,url-state}.ts                 ← Phase 2 — formatters / risk-tier classes / URL search-string helpers
 │       ├── drizzle.config.ts   ← schemaFilter ['chaindrain'], uses DATABASE_URL_SESSION
 │       ├── .env.local (gitignored) + .env.local.example
-│       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10 (bumped from plan's 0.36/0.30)
+│       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10, @radix-ui/react-dialog ^1.1.15, lucide-react ^0.435.0, clsx ^2.1.1
 │       ├── tsconfig.json, next.config.ts, eslint.config.mjs, postcss.config.mjs
 │       └── public/
 ├── packages/shared-types/  # legacy TS types, kept until apps/web is removed
@@ -181,8 +186,16 @@ Idempotent — `TRUNCATE chaindrain.identity RESTART IDENTITY CASCADE` first. Ru
 **Pending (user, low-priority, can happen any time):**
 - Move `chaindrain.xyz` custom domain from the legacy `chaindrain` Vercel project to `chaindrain-mvp`. User said they'd do this manually and notify. When done, this AI_CONTEXT row should be updated (§4 above) and the legacy project's "rollback parachute" status reaffirmed.
 
-### Phase 2 — SCORE leg (the dashboard at `/`)
-Per [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "PHASE 2". KPI cards (4) + filter bar (sector/risk_tier/coverage_tier/oracle/chain/bridge) + sortable HTML table over `mvp_master` (50/page, default `risk_score DESC NULLS LAST`) + Radix `<Dialog>` row-click drawer. Routes: `GET /api/entities` (paginated, zod-validated), `GET /api/entities/[entity_id]`. **All SQL through `src/lib/db/queries.ts`** — no inline SQL in route handlers. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
+### Phase 2 — SCORE leg — DONE ✓ (locally, 2026-05-16)
+**The dashboard at `/`.** All Phase 2 acceptance criteria met locally; `pnpm build` clean.
+- 4 KPI cards (critical count, high count, total TVL, total blast radius) sourced from `getKpiSummary()`.
+- Filter bar with multi-select on sector, risk_tier, coverage_tier, oracle_provider, chain, bridge + free-text name search. State lives in URL `searchParams`; filter changes use `router.push` inside a `useTransition`.
+- Sortable HTML table over `chaindrain.mvp_master`, 50/page default, default sort `risk_score DESC NULLS LAST`, name as secondary key. Sort fields: `risk_score`, `tvl_usd`, `blast_radius_usd`, `name`, `sector`, `risk_tier`, `coverage_tier`. Pagination prev/next at the bottom.
+- Row click → Radix `<Dialog>` drawer (right-side slide-in, `max-w-2xl`) showing all 48 fields from `mvp_master` grouped into Identity / Contract Fingerprint / Audits & Bounties / Dependencies / Risk Factors. Drawer fetches from `/api/entities/[entity_id]` keyed on the row id; component is keyed on entity_id so state resets cleanly per open.
+- Routes: `GET /api/entities` (paginated, zod-validated query params via `entitiesQuerySchema`), `GET /api/entities/[entity_id]` (zod UUID validation). Both `runtime: 'nodejs'`, `dynamic: 'force-dynamic'`.
+- **All SQL through `src/lib/db/queries.ts`** — `getKpiSummary`, `getFilterOptions`, `getEntities`, `getEntityById`. Route handlers contain no SQL strings. Filters use Postgres array operators (`= ANY(...)` for scalar columns, `&&` overlap for `oracle_providers` / `chain_deployments` / `bridge_dependencies`).
+- **Acceptance verified:** `riskTiers=critical` → 59 rows, RealT first (`risk_score=0.8532`). Default unfiltered view shows 875 entities. Sector="Tokenized Real-World Assets" → 28 rows. Multi-filter (`oracles=Chainlink&riskTiers=critical&sort=tvl_usd`) → 13 rows, Binance Validator Operations top. Invalid query params → 400 with structured zod issue list.
+- New deps added in this phase: `@radix-ui/react-dialog ^1.1.15`, `lucide-react ^0.435.0`, `clsx ^2.1.1`. No `tailwind-merge` needed — Tailwind v4 + clsx is sufficient.
 
 ### Phase 3 — DETECT leg (5 pollers + alerts table)
 New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uuid pk, detected_at timestamptz, signal_type text, severity text, dependency_key text, dependency_field text, raw_signal jsonb, fanout_count int, fanout_tvl_usd numeric)` + 2 indexes. 5 pure poller fns under `src/lib/pollers/`: stablecoin-depeg (CoinGecko), oracle-deviation (Chainlink RPC + Pyth Hermes), bridge-pause (LayerZero RPC + Wormholescan + Axelar), admin-tx (Etherscan free, top 100 entities, sequential 250ms sleep), tvl-drop (DefiLlama). Orchestrator at `src/workers/poll-signals.ts` + `src/app/api/cron/poll/route.ts`. `vercel.json` cron `*/5 * * * *`. Vitest unit tests per poller. **Acceptance:** synthetic USDC=0.97 → critical alert, `fanout_count > 50`. Need `ETHERSCAN_API_KEY` (free, 5 req/s) + `CRON_SECRET` env vars.
@@ -195,13 +208,17 @@ New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uu
 
 ---
 
-## 8. Where the chat paused (handoff to Phase 2)
+## 8. Where the chat paused (handoff to Phase 3)
 
-**Phase 1 fully closed.** `chaindrain-mvp.vercel.app/api/health` returns `{ok:true,count:875}`. Commit `20c635b` on `main`. Legacy `chaindrain.vercel.app` build also green (rollback parachute intact).
+**Phase 2 fully closed locally.** Dashboard at `/` renders all 875 entities with sortable table + filter bar + KPI cards + Radix drawer. `pnpm typecheck`, `pnpm lint`, and `pnpm build` are all clean. Acceptance: `riskTiers=critical` → 59 rows, RealT top (`risk_score=0.8532`). Phase 2 commit pending push to `main`; once pushed, Vercel will auto-deploy `chaindrain-mvp.vercel.app` and a manual smoke against the live `/?riskTiers=critical` URL is the final close-out for the user.
 
-**One trap for the next agent to know about** (see DECISIONS §18): if `pnpm install` ever hangs again with no progress for minutes, the cause is almost certainly that a sandboxed run wrote a fresh `.pnpm-store/v3/` in-repo, and `.claude/settings.local.json` files inside packages have the macOS `com.apple.provenance` xattr blocking `copyfile`. Recipe: `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]` so pnpm can write to the global `~/Library/pnpm/store` (which the root `.npmrc` is already pinned to).
+**One trap from Phase 1 still relevant** (see DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, the cause is almost certainly that a sandboxed run wrote a fresh `.pnpm-store/v3/` in-repo, and `.claude/settings.local.json` files inside packages have the macOS `com.apple.provenance` xattr blocking `copyfile`. Recipe: `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]` so pnpm can write to the global `~/Library/pnpm/store` (which the root `.npmrc` is already pinned to).
 
-**To start Phase 2:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 2. The active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md` and `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 2" are the canonical specs. First step is the KPI cards + filter bar + sortable `mvp_master` table at `/`, all SQL via `apps/mvp/src/lib/db/queries.ts`.
+**Phase 2 design notes worth carrying forward:**
+- The Drizzle introspect output flattens Postgres `text[]` columns on the `mvp_master` view to plain `text()`. Don't trust the generated view types for arrays — use raw `sql` (postgres-js) tagged templates from `src/lib/db/queries.ts`. `chain_deployments`, `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`, and `audit_firms` all come back as JS arrays at runtime via postgres-js's native array decoding.
+- React 19's new lint rule `react-hooks/set-state-in-effect` blocks naive `useEffect(() => setX(prop))` patterns. We adopted two workarounds: (a) **key-based remount** for the entity drawer — `<DrawerInner key={entityId} />` resets local state without touching effects, and (b) the **"adjust state during render"** pattern in `filter-bar.tsx` — `if (lastUrlSearch !== current.search) { setLastUrlSearch(current.search); setSearchInput(current.search); }`. Keep both patterns when adding more URL-driven inputs in Phase 3 forms.
+
+**To start Phase 3:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 3. Spec lives in `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 3". First step is the `chaindrain.alert` migration + 5 pollers + `vercel.json` cron. Need a free Etherscan API key + a generated `CRON_SECRET` env var before that phase ships.
 
 **Commit using the standard env-var trick** so the hook strips the Cursor trailer:
 ```bash

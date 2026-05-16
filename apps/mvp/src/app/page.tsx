@@ -1,65 +1,107 @@
-import Image from "next/image";
+import { Suspense } from "react";
+import {
+  getEntities,
+  getFilterOptions,
+  getKpiSummary,
+} from "@/lib/db/queries";
+import { entitiesQuerySchema } from "@/lib/api/schemas";
+import { KpiCards } from "@/components/kpi-cards";
+import { FilterBar } from "@/components/filter-bar";
+import { EntitiesTable } from "@/components/entities-table";
 
-export default function Home() {
+export const dynamic = "force-dynamic";
+export const runtime = "nodejs";
+
+interface PageProps {
+  searchParams: Promise<Record<string, string | string[] | undefined>>;
+}
+
+export default async function Home({ searchParams }: PageProps) {
+  const rawParams = await searchParams;
+  const flat: Record<string, string | string[]> = {};
+  for (const [key, value] of Object.entries(rawParams)) {
+    if (value === undefined) continue;
+    flat[key] = value;
+  }
+  const parsed = entitiesQuerySchema.safeParse(flat);
+  const params = parsed.success
+    ? parsed.data
+    : entitiesQuerySchema.parse({});
+
+  const [kpis, options, list] = await Promise.all([
+    getKpiSummary(),
+    getFilterOptions(),
+    getEntities({
+      filters: {
+        sectors: params.sectors,
+        riskTiers: params.riskTiers,
+        coverageTiers: params.coverageTiers,
+        oracles: params.oracles,
+        chains: params.chains,
+        bridges: params.bridges,
+        search: params.search,
+      },
+      sortField: params.sort,
+      sortDirection: params.direction,
+      page: params.page,
+      pageSize: params.pageSize,
+    }),
+  ]);
+
+  const totalPages = Math.max(1, Math.ceil(list.total / list.pageSize));
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
+      <header className="flex flex-col gap-1">
+        <div className="flex items-center gap-3">
+          <span className="inline-flex items-center rounded-md bg-zinc-900 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-white dark:bg-white dark:text-zinc-900">
+            Chaindrain
+          </span>
+          <span className="text-xs uppercase tracking-wider text-zinc-500">
+            SCORE leg · MVP
+          </span>
+        </div>
+        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
+          Risk dashboard
+        </h1>
+        <p className="text-sm text-zinc-600 dark:text-zinc-400">
+          Predictive threat detection across {kpis.total_entities.toLocaleString()}{" "}
+          tracked crypto protocols. Click any row for full entity detail.
+        </p>
+      </header>
+
+      <KpiCards kpis={kpis} />
+
+      <Suspense fallback={null}>
+        <FilterBar options={options} />
+      </Suspense>
+
+      <Suspense fallback={null}>
+        <EntitiesTable
+          rows={list.rows}
+          page={list.page}
+          pageSize={list.pageSize}
+          total={list.total}
+          totalPages={totalPages}
+          sort={params.sort}
+          direction={params.direction}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+      </Suspense>
+
+      <footer className="flex items-center justify-between border-t border-zinc-200 pt-4 text-xs text-zinc-500 dark:border-zinc-800">
+        <span>
+          Data:{" "}
+          <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">
+            chaindrain.mvp_master
+          </code>
+        </span>
+        <a
+          href="/api/health"
+          className="hover:text-zinc-700 dark:hover:text-zinc-300"
+        >
+          /api/health
+        </a>
+      </footer>
     </div>
   );
 }

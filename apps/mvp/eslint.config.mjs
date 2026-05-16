@@ -12,6 +12,11 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Drizzle introspect output is regenerated; not hand-edited.
+    "src/lib/db/schema.ts",
+    "src/lib/db/relations.ts",
+    "src/lib/db/meta/**",
+    "src/lib/db/0000_*.sql",
   ]),
 ]);
 
