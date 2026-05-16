@@ -2,9 +2,16 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Chaindrain — Threat Detection",
+  title: "chaindrain — Threat Detection",
   description:
     "Predictive threat detection for crypto protocols — risk score, dependency fan-out, and signal alerts.",
+  icons: {
+    icon: [
+      { url: "/favicon.png", type: "image/png" },
+    ],
+    shortcut: "/favicon.png",
+    apple: "/favicon.png",
+  },
 };
 
 export default function RootLayout({
