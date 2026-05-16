@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 3 DONE ✓ (locally)**. DETECT leg: `chaindrain.alert` table live in Supabase; 5 pollers (stablecoin-depeg / oracle-deviation / bridge-pause / admin-tx / tvl-drop) wired through `src/workers/poll-signals.ts`; `/api/cron/poll` protected by `CRON_SECRET` Bearer auth; `vercel.json` cron `*/5 * * * *`. `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E synthetic smoke: USDC=0.97 → critical alert, `fanout_count=70`, `fanout_tvl_usd=$39.5B` (cleaned up). Ready for prod push, Vercel env-var setup (`CRON_SECRET` + `ETHERSCAN_API_KEY`), and Phase 4 (FAN OUT leg). Phase 2 prod also smoke-verified live: `GET /api/entities?riskTiers=critical&pageSize=1` returns `total=59`, top=RealT (0.8532) in 213ms.
+**Last updated:** 2026-05-16 — **Phase 3 DONE ✓ (locally + initial prod deploy failed, then fixed)**. DETECT leg: `chaindrain.alert` table live; 5 pollers under `src/lib/pollers/`; `/api/cron/poll` protected by `CRON_SECRET` Bearer auth. **The 5-min cadence runs from GitHub Actions (`.github/workflows/cron-poll.yml`), NOT Vercel Cron** — Vercel Hobby plan rejects sub-daily schedules at deploy time, which broke the first Phase 3 push (`fee1948`); fix shipped in the follow-up commit (see DECISIONS §23). `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E synthetic smoke: USDC=0.97 → critical alert, `fanout_count=70`, `fanout_tvl_usd=$39.5B` (cleaned up). Ready for Phase 4 (FAN OUT leg). Phase 2 prod also smoke-verified live: `GET /api/entities?riskTiers=critical&pageSize=1` returns `total=59`, top=RealT (0.8532) in 213ms.
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -61,7 +61,6 @@ chaindrain/
 │       ├── src/lib/api/schemas.ts                       ← Phase 2 — entitiesQuerySchema + entityIdParamsSchema (zod)
 │       ├── src/lib/{utils,url-state}.ts                 ← Phase 2 — formatters / risk-tier classes / URL search-string helpers
 │       ├── drizzle.config.ts   ← schemaFilter ['chaindrain'], uses DATABASE_URL_SESSION
-│       ├── vercel.json   ← Phase 3 — { "crons": [{ "path": "/api/cron/poll", "schedule": "*/5 * * * *" }] }
 │       ├── vitest.config.ts   ← Phase 3 — `pool: "forks"`, includes src/**/*.test.ts
 │       ├── .env.local (gitignored) + .env.local.example   ← Phase 3 added CRON_SECRET + ETHERSCAN_API_KEY
 │       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10, @radix-ui/react-dialog ^1.1.15, lucide-react ^0.435.0, clsx ^2.1.1, viem ^2.49.3, vitest ^4.1.6
@@ -104,11 +103,11 @@ The `chaindrain_export/` bundle (in `~/Downloads/`) is the input dataset. Key fi
 |---|---|---|
 | **Supabase project** | `uftbynydcmzfggltyjao.supabase.co` (us-east-1, Postgres 17.6) | ACTIVE_HEALTHY. `chaindrain.*` schema with 875×4=3,500 rows. `public.*` empty. |
 | **GitHub** | `github.com/wazarat/chaindrain` | `main` is `fa7e795` (Phase 0 close). Remote is HTTPS; pushes work. |
-| **Vercel (legacy web)** | `chaindrain.vercel.app` | Frozen rollback parachute. Last build (post-Phase-1 push) was green. `chaindrain.xyz` custom domain may be migrated off in Phase 1 wrap (user-driven). Decommission in Phase 6. |
-| **Vercel (mvp)** | `chaindrain-mvp.vercel.app` | LIVE (Phase 1 close, 2026-05-16). Root Directory `apps/mvp`, "Include source files outside Root Directory" ON. 4 env vars set (no service-role yet). `/api/health` → `{ok:true,count:875}` in 166ms. |
+| **Vercel (legacy web)** | `chaindrain.vercel.app` | Frozen rollback parachute. Root Directory `apps/web`. Builds on every push to `main` unless an **Ignored Build Step** is set (see §9). Decommission in Phase 6. |
+| **Vercel (mvp)** | `chaindrain-mvp.vercel.app` | LIVE since Phase 1. Root Directory `apps/mvp`, "Include source files outside Root Directory" ON. Phase 3 first push (`fee1948`) **failed** at validation because `vercel.json` had a sub-daily cron and the account is on Hobby; cron strategy moved to GitHub Actions (see DECISIONS §23). |
 | ~~chaindrain-api.fly.dev~~ | — | **Destroyed 2026-05-16** (`flyctl apps destroy`). |
 | ~~chaindrain-agent.fly.dev~~ | — | **Destroyed 2026-05-16**. |
-| ~~Edge Function `cron-trigger`~~ | — | Removed from repo; Vercel Cron will replace. |
+| ~~Edge Function `cron-trigger`~~ | — | Removed from repo. Replaced by GitHub Actions `.github/workflows/cron-poll.yml` (every 5 min → curls the Vercel route). |
 
 **Supabase MCP** is wired (`plugin-supabase-supabase`). Auth survives across sessions but if a tool call returns an auth error, run `plugin-supabase-supabase-mcp_auth` first. Project ref: `uftbynydcmzfggltyjao`.
 
@@ -215,9 +214,9 @@ Migration `20260517000000_alerts.sql` applied (alert_id pk + indexes + CHECK con
 
 Orchestrator `src/workers/poll-signals.ts` (`pnpm poll`, tsx-runnable): fetches admin watchlist + slugs once, runs all 5 pollers via `Promise.allSettled`, per-poller try/catch (`console.error({ pollster, error })`), computes fanout via `computeFanout(dependency_field, dependency_key)` (uses GIN `&&` for array fields, scalar `=` for `admin_address`/`defillama_slug`), persists each alert atomically with `insertAlert`. Returns `PollRunSummary` (started_at, finished_at, elapsed_ms, per-poller outcomes, persisted alerts).
 
-`src/app/api/cron/poll/route.ts` (`runtime: nodejs`, `dynamic: force-dynamic`, `maxDuration: 60`): rejects with 500 `cron_secret_not_configured` if `CRON_SECRET` unset; 401 `unauthorized` on missing/wrong Bearer; else runs the orchestrator and returns `{ ok: true, summary }`. Accepts both GET and POST (Vercel Cron sends GET).
+`src/app/api/cron/poll/route.ts` (`runtime: nodejs`, `dynamic: force-dynamic`, `maxDuration: 60`): rejects with 500 `cron_secret_not_configured` if `CRON_SECRET` unset; 401 `unauthorized` on missing/wrong Bearer; else runs the orchestrator and returns `{ ok: true, summary }`. Accepts both GET and POST (the GitHub Actions cron sends POST).
 
-`apps/mvp/vercel.json` — `{ "crons": [{ "path": "/api/cron/poll", "schedule": "*/5 * * * *" }] }`.
+**Schedule**: `.github/workflows/cron-poll.yml` — GitHub Actions cron at `*/5 * * * *` (note: GitHub may throttle to ~10–15 min under load; spec compliance is "regular execution", not exact 5-min cadence). The workflow `curl`s `https://chaindrain-mvp.vercel.app/api/cron/poll` with `Authorization: Bearer ${{ secrets.CRON_SECRET }}` and fails the run on non-200. `workflow_dispatch` is enabled for ad-hoc manual triggers (optional `target_url` input for preview deployments). No `apps/mvp/vercel.json` cron — Vercel Hobby plan rejects sub-daily schedules.
 
 Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5 test files, **29 tests, all passing**. Headline test: synthetic USDC=0.97 → 1 critical alert with `dependency_key='USDC'`, `dependency_field='stablecoin_dependencies'`. Live E2E smoke (one-off script, then deleted) proved end-to-end pipeline: classifier → `computeFanout` → `insertAlert` → readback → cleanup. Live USDC fanout = **70 entities, $39.5B blast radius** (spec's `> 50` requirement satisfied).
 
@@ -233,13 +232,20 @@ Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5
 
 ## 8. Where the chat paused (handoff to Phase 4)
 
-**Phase 3 fully closed locally.** Migration applied to prod Supabase, Drizzle re-introspected, 5 pollers + orchestrator + cron route + vitest tests all green. `pnpm typecheck/lint/test/build` all clean. End-to-end acceptance proven via one-off live smoke (USDC=0.97 → critical alert with `fanout_count=70, fanout_tvl_usd=$39.5B`, persisted + readback + cleanup). Local cron-route auth gating verified (no token → 401, wrong token → 401, missing `CRON_SECRET` env → 500 with `cron_secret_not_configured`). 0 alert rows currently persisted in prod (clean slate for the first cron fire).
+**Phase 3 fully closed locally + initial deploy failed and was fixed.** Migration applied to prod Supabase, Drizzle re-introspected, 5 pollers + orchestrator + cron route + vitest tests all green. End-to-end acceptance proven via one-off live smoke (USDC=0.97 → critical alert with `fanout_count=70, fanout_tvl_usd=$39.5B`, persisted + readback + cleanup).
 
-**Phase 3 commit pending push to `main`.** Once pushed:
-1. Vercel auto-deploy of `chaindrain-mvp.vercel.app` will pick up the new route + `vercel.json` cron config.
-2. **User must add `CRON_SECRET` to Vercel Production+Preview+Development env vars before the first cron fire.** Value generated this session: `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846`. Also confirm `ETHERSCAN_API_KEY` is in Preview as well as Production (user said Production is set).
-3. **First cron fire** will happen within 5 minutes of deploy completion. Verify via Vercel dashboard → Crons (should show a green tick) and SQL probe: `SELECT signal_type, severity, dependency_key, fanout_count, fanout_tvl_usd, detected_at FROM chaindrain.alert ORDER BY detected_at DESC LIMIT 20;`. If pollers degrade gracefully (no alerts produced), the row count stays 0 and the route still returns 200 — that's normal and expected for a quiet 5-minute window.
-4. Manual smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://chaindrain-mvp.vercel.app/api/cron/poll` should return `{ ok: true, summary: { ... per-poller outcomes ... } }`.
+**Deploy fix shipped in commit after `fee1948`:** the first Phase 3 push failed because `apps/mvp/vercel.json` declared a `*/5 * * * *` cron and the Vercel project is on the **Hobby plan**, which only allows daily crons (error: "Hobby accounts are limited to daily cron jobs"). Resolution:
+- Deleted `apps/mvp/vercel.json` (Phase 5's `0 9 * * *` digest will recreate it — that schedule is Hobby-compatible).
+- Added `.github/workflows/cron-poll.yml` — GitHub Actions cron at `*/5 * * * *` that curls `https://chaindrain-mvp.vercel.app/api/cron/poll` with `Authorization: Bearer ${{ secrets.CRON_SECRET }}`. Public repo = free Actions minutes. See DECISIONS §23.
+- Refactored `.github/workflows/ci.yml`: dropped dead `api-lint`, `agent-lint` jobs (target dirs deleted in Phase 0) and the noisy `web-lint-typecheck` (apps/web is frozen). Added a real `mvp` job running `lint + typecheck + test` so red CI = real Phase 3 regression.
+
+**User actions required after this commit:**
+1. **Add `CRON_SECRET` to GitHub repo secrets** (Settings → Secrets and variables → Actions → New repository secret, name `CRON_SECRET`, value `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846`). Without it, the workflow exits 1 with `CRON_SECRET repo secret is not set`.
+2. **Add `CRON_SECRET` to Vercel `chaindrain-mvp` env vars** (Production + Preview + Development) — same value. Without it, the route returns 500 `cron_secret_not_configured`.
+3. **Confirm `ETHERSCAN_API_KEY` is set in Vercel Preview as well as Production** (user said Production is set).
+4. **Set Ignored Build Step on both Vercel projects** so future pushes only build the affected project (see §9 below).
+5. **First cron fire** will happen within ~5–15 min of the workflow being merged (GitHub Actions cron has up-to-15-min jitter). Verify via Actions tab → `cron-poll-signals` runs, plus SQL probe: `SELECT signal_type, severity, dependency_key, fanout_count, fanout_tvl_usd, detected_at FROM chaindrain.alert ORDER BY detected_at DESC LIMIT 20;`. If all pollers degrade gracefully (no alerts produced), the row count stays 0 and the route still returns 200 — normal for a quiet 5-min window.
+6. Manual smoke: `curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://chaindrain-mvp.vercel.app/api/cron/poll` should return `{ ok: true, summary: { ... per-poller outcomes ... } }`. Or trigger the workflow from the Actions tab via `workflow_dispatch`.
 
 **Out of scope for Phase 3 (intentionally deferred, refuse if asked):** an `/alerts` UI surface (that's Phase 4), email/Slack/Discord notifications (Phase 5), additional pollers, alert replay, LLM reasoning. Alert dedup is also deferred — if a signal stays in the bad state for an hour, the cron will emit 12 alerts. We'll revisit in Phase 4 once the UI exposes the noise.
 
@@ -261,3 +267,48 @@ GIT_AUTHOR_EMAIL=wazarat@outlook.com GIT_AUTHOR_NAME=wazarat \
 GIT_COMMITTER_EMAIL=wazarat@outlook.com GIT_COMMITTER_NAME=wazarat \
 git commit -m "phase 3: ..."
 ```
+
+---
+
+## 9. Vercel project routing & deploy ops
+
+Two Vercel projects share the `wazarat/chaindrain` GitHub repo:
+
+| Project | Vercel URL | Root Directory | Purpose |
+|---|---|---|---|
+| `chaindrain-mvp` | `chaindrain-mvp.vercel.app` | `apps/mvp` | **The product.** Pushes touching `apps/mvp/` (or shared workspace files) should rebuild here. |
+| `chaindrain` (legacy) | `chaindrain.vercel.app` | `apps/web` | Frozen rollback parachute. Should only rebuild if someone touches `apps/web/`. |
+
+By default Vercel rebuilds **both** projects on every push to `main`. Without an Ignored Build Step set, you get:
+- Wasted Hobby build minutes on the legacy project.
+- Both projects' deploy statuses flooding the GitHub commit checks (caused user confusion during the Phase 3 push).
+
+**Fix (do once in the Vercel dashboard per project):**
+
+For `chaindrain-mvp` → Settings → Git → Ignored Build Step → "Custom":
+```bash
+bash -c 'git diff HEAD^ HEAD --quiet -- apps/mvp packages pnpm-lock.yaml pnpm-workspace.yaml .npmrc supabase/migrations'
+```
+
+For `chaindrain` (legacy) → Settings → Git → Ignored Build Step → "Custom":
+```bash
+bash -c 'git diff HEAD^ HEAD --quiet -- apps/web'
+```
+
+**Semantics:** `git diff --quiet` exits 0 if no diff, 1 if there is one. Vercel's contract is "exit 0 = skip build, non-zero = build" — so the command above means *"if any file in the listed paths changed, build; otherwise skip."*
+
+**Caveats:**
+- `HEAD^` doesn't exist on the first commit of a branch. Vercel runs Ignored Build Step from a shallow clone with depth=2, so it works for normal pushes. For branch-create events, Vercel always builds (safe default).
+- If you ever resurrect `apps/api/` or `apps/agent/` they need their own Vercel project or you'll need to add them to the mvp project's path list.
+- Don't put the Ignored Build Step in `vercel.json` — it's a project-scoped setting only.
+
+**Diagnosing future deploy weirdness** — fastest path:
+```bash
+# 1. Are deployments actually being attempted?
+curl -sS "https://api.github.com/repos/wazarat/chaindrain/commits/<sha>/statuses" \
+  | python3 -c "import json,sys; [print(s['context'], s['state'], s.get('target_url','')) for s in json.load(sys.stdin)]"
+
+# 2. Is the new route on prod?
+curl -sS -i https://chaindrain-mvp.vercel.app/api/<new-route> | head -5
+```
+If status shows `Vercel – chaindrain-mvp` as `failure`, follow the `target_url` (it'll be a `vercel.link/...` shortlink) to the build log. Hobby-plan plan-validation errors (like the sub-daily cron limit) surface during the build step, not at runtime.

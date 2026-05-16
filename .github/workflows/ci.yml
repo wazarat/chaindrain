@@ -7,35 +7,34 @@ on:
     branches: [main]
 
 env:
-  NODE_VERSION: 20
-  PYTHON_VERSION: "3.12"
+  NODE_VERSION: "20"
 
 jobs:
-  web-lint-typecheck:
+  mvp:
+    name: mvp lint + typecheck + test
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/web
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
-        # Version comes from the `packageManager` field in the root package.json.
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - name: Install
+      - name: Install (workspace)
         run: pnpm install --no-frozen-lockfile
-        working-directory: .
+      - name: Lint
+        run: pnpm --filter @chaindrain/mvp lint
       - name: Typecheck
-        run: pnpm typecheck
+        run: pnpm --filter @chaindrain/mvp typecheck
+      - name: Test
+        run: pnpm --filter @chaindrain/mvp test
 
   shared-types-typecheck:
+    name: shared-types typecheck (legacy)
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/shared-types
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -44,46 +43,15 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - run: pnpm install --no-frozen-lockfile
-        working-directory: .
-      - run: pnpm typecheck
+      - name: Install (workspace)
+        run: pnpm install --no-frozen-lockfile
+      - name: Typecheck
+        run: pnpm --filter @chaindrain/shared-types typecheck
 
-  api-lint:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/api
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - uses: astral-sh/setup-uv@v3
-      - name: Install
-        run: uv pip install --system -e ".[dev]"
-      - name: Ruff
-        run: uv run ruff check .
-      - name: Mypy
-        run: uv run mypy app || true # advisory only at MVP
-
-  agent-lint:
-    runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: apps/agent
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - uses: astral-sh/setup-uv@v3
-      - name: Install
-        run: uv pip install --system -e ".[dev]"
-      - name: Ruff
-        run: uv run ruff check .
-
-  # NOTE: Postgres-based migrate-check and rls-audit jobs were removed from CI.
-  # They depended on rehydrating Supabase's `auth.*` and `storage.*` schemas in
-  # a vanilla Postgres image, which is brittle. We instead run the RLS audit
-  # directly against the live Supabase project (see scripts/rls_audit.sql, run
-  # via `psql $DATABASE_URL` locally or through the Supabase MCP integration).
+# Removed in Phase 3 cleanup (commit on 2026-05-16):
+# - api-lint / agent-lint — apps/api + apps/agent were deleted in Phase 0
+# - web-lint-typecheck    — apps/web is frozen; the mvp job above is the
+#                            canonical lint+typecheck surface
+# - migrate-check / rls-audit — never reinstated after the Phase-0 rewrite;
+#                                see scripts/rls_audit.sql + the live MCP
+#                                path for the equivalent check.

@@ -1,0 +1,67 @@
+name: cron-poll-signals
+
+# Why GitHub Actions instead of Vercel Cron:
+# Vercel Hobby plan rejects sub-daily cron schedules at deploy time
+# ("Hobby accounts are limited to daily cron jobs"). The DETECT leg's
+# spec requires a 5-minute polling cadence, so we drive the schedule
+# from GitHub Actions (free for public repos) and just curl the
+# deployed Vercel route. The route + auth + orchestrator are unchanged;
+# only the trigger source moved.
+#
+# Requires repo secret CRON_SECRET (matches the Vercel env var).
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+    inputs:
+      target_url:
+        description: "Override target URL (default: prod)"
+        required: false
+        default: ""
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cron-poll-signals
+  cancel-in-progress: false
+
+jobs:
+  poll:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Hit /api/cron/poll
+        env:
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          TARGET_URL: ${{ inputs.target_url || 'https://chaindrain-mvp.vercel.app/api/cron/poll' }}
+        run: |
+          set -u
+          if [ -z "${CRON_SECRET}" ]; then
+            echo "::error::CRON_SECRET repo secret is not set"
+            exit 1
+          fi
+          echo "POST ${TARGET_URL}"
+          http_code=$(
+            curl -sS \
+              --max-time 90 \
+              --retry 2 \
+              --retry-delay 5 \
+              -o /tmp/poll.json \
+              -w "%{http_code}" \
+              -H "Authorization: Bearer ${CRON_SECRET}" \
+              -X POST \
+              "${TARGET_URL}"
+          )
+          echo "http=${http_code}"
+          echo "--- response ---"
+          if [ -s /tmp/poll.json ]; then
+            # Show a bounded chunk so logs stay readable even on giant payloads.
+            head -c 8000 /tmp/poll.json
+            echo
+          fi
+          if [ "${http_code}" != "200" ]; then
+            echo "::error::Poll endpoint returned HTTP ${http_code}"
+            exit 1
+          fi

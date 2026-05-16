@@ -280,3 +280,26 @@ Per-alert writes also give Phase 4's `/alerts` UI the most-recent-first ordering
 The pollers themselves degrade gracefully on missing optional config: `admin-tx` logs a `console.warn` and returns empty when `ETHERSCAN_API_KEY` is unset; the others have hard-coded free public endpoints. The hard fail is reserved for the *route-level secret* that gates the entire cron path.
 
 **See:** `apps/mvp/src/app/api/cron/poll/route.ts`.
+
+---
+
+## 23. Schedule the DETECT cron from GitHub Actions, not Vercel Cron
+
+**Decision (2026-05-16, post-Phase-3 deploy fix):** The 5-minute poller cadence is driven by a GitHub Actions workflow (`.github/workflows/cron-poll.yml`) at `schedule: "*/5 * * * *"`, which `curl`s the deployed `https://chaindrain-mvp.vercel.app/api/cron/poll` with `Authorization: Bearer ${{ secrets.CRON_SECRET }}`. `apps/mvp/vercel.json` no longer declares a `crons` entry; the file was deleted.
+
+**Rationale:** The Vercel project is on the **Hobby plan**, which rejects any cron expression that would fire more than once per day at *deploy time* with the error `Hobby accounts are limited to daily cron jobs`. Our spec requires a 5-minute cadence, so Vercel Cron is incompatible without upgrading to Pro ($20/mo). The first Phase 3 push (commit `fee1948`) failed for exactly this reason — `Vercel – chaindrain-mvp` reported `failure` against the commit while the legacy `chaindrain` project deployed normally (no cron declared there), which surfaced as "the wrong project deployed" from the user's perspective.
+
+GitHub Actions cron is the closest substitute that:
+- Costs $0 (the repo is public, so Actions minutes are unmetered).
+- Keeps the route + auth + orchestrator code identical (Vercel still hosts and authenticates the run; only the trigger source moved).
+- Surfaces run history in the Actions tab with full logs of the poll route's JSON response.
+- Supports `workflow_dispatch` for ad-hoc manual triggers (with an optional `target_url` input for preview deployments).
+- Can be flipped back to Vercel Cron later by re-adding the `crons` entry once on Pro — the route is unchanged.
+
+**Known limitation:** GitHub Actions cron has up-to-15-min jitter under load; the spec says "every 5 min", but the underlying acceptance criterion ("5 pollers all run successfully on the cron without errors for 24h straight") only requires regular execution, not exact 5-min cadence. Pyth/Chainlink staleness windows are far longer than 15 min, so the detection mission is preserved.
+
+**Alternative considered: Supabase pg_cron + pg_net.** The pg_cron extension is still installed in our project (Phase 0 only unscheduled the jobs). It'd give us exact 5-min cadence and run the trigger from the same infra as the data, but requires pasting the `CRON_SECRET` into Supabase Vault and writing a pg_net job — more setup, less log visibility (no equivalent of the Actions UI). Re-evaluate if we ever migrate the DB to a paid Supabase tier with full pg_cron observability.
+
+**Cleanup shipped in the same commit:** dropped `api-lint` and `agent-lint` jobs from `.github/workflows/ci.yml` (their `apps/api/` and `apps/agent/` directories were deleted in Phase 0); dropped the noisy `web-lint-typecheck` (apps/web is frozen rollback parachute); added a real `mvp` job running `lint + typecheck + test` for the active surface.
+
+**See:** `.github/workflows/cron-poll.yml`, `.github/workflows/ci.yml`, `docs/AI_CONTEXT.md` §9 (Vercel project routing & deploy ops).

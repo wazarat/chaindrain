@@ -10,6 +10,57 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #6) — Fix Phase 3 deploy failure: GitHub Actions cron + CI cleanup + project routing
+
+### Session goals
+Phase 3 commit `fee1948` pushed to `main` did not deploy `chaindrain-mvp` — `Vercel – chaindrain-mvp` reported `failure` against the commit while the legacy `chaindrain` project deployed normally. User asked to fix the immediate deploy and ensure pushes touching `apps/mvp/` route to the correct Vercel project going forward.
+
+### Root-cause investigation
+1. `curl https://chaindrain-mvp.vercel.app/api/cron/poll` → `HTTP/2 404` (Phase 3 route absent); `/api/health` → 200 (Phase 1/2 still live). Confirmed Phase 3 did not deploy.
+2. `https://api.github.com/repos/wazarat/chaindrain/commits/fee1948/statuses` showed:
+   - `Vercel – chaindrain` → **success** (legacy project rebuilt unnecessarily — no path filtering).
+   - `Vercel – chaindrain-mvp` → **failure** (target_url: vercel.link/3Fpeeb1).
+3. Fetched the build-log shortlink — it redirected to Vercel docs on cron limits: **"Hobby accounts are limited to daily cron jobs. This cron expression would run more than once per day."** That's a deploy-time plan-validation failure, not a runtime error. `apps/mvp/vercel.json` had `"schedule": "*/5 * * * *"` which the Hobby plan rejects.
+4. Same API also surfaced dead GitHub Actions jobs: `api-lint` and `agent-lint` were red because their target directories (`apps/api/`, `apps/agent/`) were deleted in Phase 0.
+
+### What changed
+1. **Deleted `apps/mvp/vercel.json`** — Phase 5's `0 9 * * *` digest cron will recreate it when needed (daily schedule is Hobby-compatible).
+2. **Added `.github/workflows/cron-poll.yml`** — GitHub Actions cron at `*/5 * * * *` that POSTs to `https://chaindrain-mvp.vercel.app/api/cron/poll` with `Authorization: Bearer ${{ secrets.CRON_SECRET }}`. Has `workflow_dispatch` for manual triggers (with optional `target_url` input for preview deployments). Uses `concurrency` to prevent overlapping runs. Fails non-zero on non-200 with a `::error::` annotation. Truncates the response body to 8KB in logs.
+3. **Refactored `.github/workflows/ci.yml`:**
+   - Removed dead `api-lint` and `agent-lint` jobs (Phase 0 deletions).
+   - Removed `web-lint-typecheck` (apps/web frozen — was just noise).
+   - Removed shared `PYTHON_VERSION` env (no longer used).
+   - Added `mvp` job: `pnpm install --no-frozen-lockfile` then `pnpm --filter @chaindrain/mvp lint && typecheck && test`. This is the new authoritative CI surface for Phase 3+.
+   - Kept `shared-types-typecheck` (cheap, catches workspace resolution regressions).
+4. **Updated `docs/AI_CONTEXT.md`:** rewrote the header, §4 Vercel table, §7 Phase 3 cron description, §8 handoff block, and added a new **§9 — Vercel project routing & deploy ops** with the exact Ignored Build Step recipes for both projects.
+5. **Added `docs/DECISIONS.md` §23** — "Schedule the DETECT cron from GitHub Actions, not Vercel Cron" — explains the Hobby-plan constraint, why we chose GitHub Actions over Pro upgrade / Supabase pg_cron, the 15-min jitter trade-off, and the CI cleanup that shipped in the same commit.
+
+### Acceptance / verification (pre-push)
+- `pnpm --filter @chaindrain/mvp test` — still 29/29 green (no app code touched).
+- `pnpm --filter @chaindrain/mvp typecheck` — clean.
+- `pnpm --filter @chaindrain/mvp lint` — clean.
+- Workflow YAML syntax verified by inspection (no `actionlint` in toolchain; relying on GitHub's parser at push time).
+
+### Pending user actions
+1. **Add `CRON_SECRET` to GitHub repo secrets** (Settings → Secrets and variables → Actions → New repository secret, name `CRON_SECRET`, value `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846` — same value as the Vercel env var). Without it, the workflow exits 1 with a clear error message.
+2. **Set Ignored Build Step on both Vercel projects** (Settings → Git → Ignored Build Step → Custom):
+   - `chaindrain-mvp`: `bash -c 'git diff HEAD^ HEAD --quiet -- apps/mvp packages pnpm-lock.yaml pnpm-workspace.yaml .npmrc supabase/migrations'`
+   - `chaindrain` (legacy): `bash -c 'git diff HEAD^ HEAD --quiet -- apps/web'`
+   - Semantics: exit 0 = skip, non-zero = build. `git diff --quiet` matches that contract.
+3. **Manually trigger the workflow once** (Actions → cron-poll-signals → Run workflow) after #1 lands, to confirm end-to-end before the 5-min schedule kicks in.
+
+### Files modified / created
+- **Deleted:** `apps/mvp/vercel.json`
+- **Created:** `.github/workflows/cron-poll.yml`
+- **Modified:** `.github/workflows/ci.yml`, `docs/AI_CONTEXT.md`, `docs/DECISIONS.md`, `docs/CHANGELOG_DEV.md`
+
+### Next steps
+- Verify next push to `main` shows only `Vercel – chaindrain-mvp` as a deploy status (legacy project skipped via Ignored Build Step).
+- Confirm `chaindrain-mvp` deploy is green and `/api/cron/poll` route exists on prod.
+- Resume Phase 4 (FAN OUT leg) in a fresh chat per the AI_CONTEXT handoff section.
+
+---
+
 ## 2026-05-14 — Day 1: bring up live infra, RLS, 499 companies
 
 ### Session goals
