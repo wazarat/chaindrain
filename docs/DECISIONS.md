@@ -320,3 +320,25 @@ The smoke run on the live DB confirmed the design: for a synthetic USDC depeg al
 **Future extension (Phase 6+):** Method C (embedding similarity from `mvp_scope_spec.md` §4.4) would replace the CTE-based overlap with a vector cosine over a learned embedding. The `getSimilarExposure` seam stays — only the function body changes. Don't refactor the seam to add `algorithm: 'jaccard' | 'embedding'` until Method C actually exists; YAGNI.
 
 **See:** `apps/mvp/src/lib/db/queries.ts:getSimilarExposure`, `apps/mvp/src/app/alerts/[alert_id]/page.tsx` (call site), `chaindrain_export/data/mvp_scope_spec.md` §5.2.
+
+---
+
+## 25. Cache read-side queries with `unstable_cache` + `revalidateTag`, not the Next 16 `'use cache'` directive (yet)
+
+**Decision (2026-05-16, Phase 4.1 hotfix `444a444`):** every read-side function in `apps/mvp/src/lib/db/queries.ts` has a sibling `*Cached` export that wraps it in `unstable_cache(fn, [keyParts], { revalidate, tags })`. Pages and the entity JSON routes import the `*Cached` variants; pollers, the cron orchestrator (`runPollers`), and vitest suites still call the raw uncached functions. The cron route at `apps/mvp/src/app/api/cron/poll/route.ts` calls `revalidateTag(CACHE_TAG_ALERTS, "max")` + `revalidateTag(CACHE_TAG_KPIS, "max")` after `runPollers()` if any alert persisted, so the FAN OUT UI and dashboard's "Alerts (24h)" card see real cron output within one tick instead of waiting out the 30s TTL.
+
+**Why caching at all:** the dashboard `/` fans out 8 SQL roundtrips per render (`getKpiSummary` × 2 + `getFilterOptions` × 4 + `getEntities` × 2 via `Promise.all`). Combined with Vercel Lambda freezing mid-result and orphaning Supavisor sessions at `wait_event=ClientRead` for up to the 2-min statement_timeout (see PM #9 CHANGELOG_DEV entry for the `pg_stat_activity` evidence), this caused ~7-in-8 cold loads to hang 15s+ and 500 with the dark "This page couldn't load" Next.js error page. A `postgres-js` pool-tuning attempt (`fd54179`, max:1 + tighter timeouts) actively made it worse by causing `/api/health` to start timing out at 8s+; reverted at `ed7de06`. The only fix that worked is **stop hitting the DB on most requests**.
+
+**Why `unstable_cache` and not `'use cache'`:** Next 16's canonical replacement is the `'use cache'` directive with `cacheLife()` + `cacheTag()` (skill `next-cache-components/SKILL.md`). It requires enabling `cacheComponents: true` in `next.config.ts`, which switches the whole app to **Cache Components / Partial Prerendering** mode — every page must explicitly mark static / cached / Suspense boundaries or the build errors. That's a substantial migration to fold into a hotfix that's already on the critical path before Phase 5. `unstable_cache` is still supported in Next 16 (deprecation is "recommended migration", not "broken"), works transparently inside `dynamic = "force-dynamic"` pages, and is a 1-line wrap per function. Scope-appropriate. **Migrate to `'use cache'` as a Phase 5.x polish or pre-v0.1.0 task** — the seam (`*Cached` exports + tag constants) stays; only the function bodies change.
+
+**Tag and TTL design:**
+- `CACHE_TAG_KPIS` — invalidated when alerts persist (cron). Read by `getKpiSummaryCached` (30s TTL).
+- `CACHE_TAG_FILTER_OPTIONS` — read by `getFilterOptionsCached` (1h TTL). No invalidation tag from cron because the underlying tables (`identity`, `dependency_fingerprint`) only change when `scripts/load_seed.mjs` runs. If you re-run the loader, manually `revalidateTag('filter-options', 'max')` from a one-off route or just wait an hour.
+- `CACHE_TAG_ENTITIES` — read by `getEntitiesCached` (30s), `getEntityByIdCached` (60s), `getAffectedEntitiesCached` (60s), `getSimilarExposureCached` (5min). Also invalidated indirectly when alerts persist because affected/similar views key on alert dependencies.
+- `CACHE_TAG_ALERTS` — read by `listAlertsCached` (30s), `getAlertByIdCached` (5min), `getAffectedEntitiesCached`, `getSimilarExposureCached`. Invalidated by cron when ≥ 1 alert persists.
+
+**Cache key encoding:** `unstable_cache` JSON-serializes function arguments and hashes them into the key. For `getEntitiesCached({filters,sort,direction,page,pageSize})` that means each unique filter combination gets its own cache entry — `/?` and `/?riskTiers=critical` and `/?sectors=Tokenized RWA` are independent. The 875-entity dataset has bounded filter cardinality, so cache growth is bounded.
+
+**Next 16 deprecation gotcha:** `revalidateTag(tag)` 1-arg form is now a TypeScript error in Next 16; the second argument is a required `cacheLife` profile string. We use `"max"` for cron-driven invalidation since the intent is "throw away the entry, force a fresh fetch on the next read".
+
+**See:** `apps/mvp/src/lib/db/queries.ts` (`CACHE_TAG_*` constants + `*Cached` exports), `apps/mvp/src/app/api/cron/poll/route.ts` (invalidation site), `docs/CHANGELOG_DEV.md` 2026-05-16 PM #9 entry, skill `next-cache-components/SKILL.md` for the eventual `'use cache'` migration recipe.

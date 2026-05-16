@@ -10,6 +10,102 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #9) — Phase 4.1 hotfix: cache the read-side queries so `/` stops 500-ing under serverless connection-pool starvation
+
+### Session goals
+Fresh chat opened to start Phase 5. Before starting it, user reported "the website does not seem to load" on `https://www.chaindrain.xyz/` and `https://chaindrain-mvp-git-main-wazarats-projects.vercel.app/` despite Phase 4 commit `dc729b1` showing green in Vercel. Diagnose, fix if cheap, then move on.
+
+### Diagnosis (~15 minutes of probing)
+Two independent issues, only one fixable in-repo:
+
+1. **`chaindrain-mvp-git-main-wazarats-projects.vercel.app/*` returns HTTP 401** with `set-cookie: _vercel_sso_nonce=…`. This is **Vercel Deployment Protection (Standard Protection / Vercel SSO)** intercepting non-production aliases. The "git-main" URL counts as non-production even though `main` is what production builds from. User said leave it on; use the public production aliases (`https://www.chaindrain.xyz/`, `https://chaindrain-mvp.vercel.app/`) instead.
+
+2. **`https://www.chaindrain.xyz/` (dashboard) intermittently 500s with the dark "This page couldn't load — ERROR 1326807111" screen.** Failure rate from 8 sequential curls: **1/8 succeed (HTTP 200, ~770ms); 7/8 timeout at 15s+**. `/api/health`, `/alerts`, `/alerts/[id]`, `/api/entities*` all unaffected — only the homepage, because it's the only page that fans out 8 SQL roundtrips per render (`getKpiSummary` × 2 queries + `getFilterOptions` × 4 queries + `getEntities` × 2 queries via `Promise.all`).
+
+**Root cause confirmed in `pg_stat_activity`**: a Supavisor session was sitting at `wait_event = ClientRead` with the dashboard's entities query for **116 seconds**. Postgres had the result rows ready and was waiting for the Vercel Lambda to read them off the wire — the Lambda had been **frozen mid-response** (Vercel's normal "function returned, hibernate the JS event loop" behavior) and never came back. Combined with `max_connections = 60` on Supabase Free and `max: 5` per-Lambda pool in `postgres-js`, this snowballs: each new homepage cold start opens 5 new connections, frozen Lambdas hold theirs, eventually Supavisor's tenant pool exhausts and new requests queue up at the pooler. Supporting evidence in postgres logs from the same time window: multiple `canceling statement due to statement timeout` and `unexpected EOF on client connection with an open transaction` lines.
+
+The `authenticator`/`anon`/`authenticated` roles have `statement_timeout = 3-8s`, but our queries go through `postgres-js` as the `postgres` role (no statement_timeout — inherits the 2min default). So the wedge can persist for up to 2 minutes before Postgres kills it, vs. the page itself bailing at the 10s Vercel Hobby function timeout — leaving plenty of room for the user-visible "hangs and then 500s" symptom. `EXPLAIN ANALYZE` of the heaviest query (`mvp_master ORDER BY risk_score DESC LIMIT 50`) runs in 2.4 ms when measured directly, so it's not the SQL plan — it's the serverless connection lifecycle.
+
+### Failed attempt: `postgres-js` pool tuning (commit `fd54179`, reverted in `ed7de06`)
+First instinct: drop `max: 5 → 1`, tighten `idle_timeout: 20 → 4`, add `connect_timeout: 10`, `max_lifetime: 5min`, set `application_name`. Reasoning: each Lambda holds at most one connection so frozen Lambdas can't snowball; idle connections release before the freeze can trap them; new connections fail fast instead of hanging the request 15-30s.
+
+Local typecheck/lint/test (29/29)/build all green. Pushed to `main`, Vercel deployed `success`. Post-deploy probes were **worse than baseline**: even `/api/health` (a single 0.3ms COUNT query) started timing out at 8s+ on both `chaindrain.xyz` and `chaindrain-mvp.vercel.app`. `pg_stat_activity` still showed the same `ClientRead` wedge on a 65s-old entities query — `max: 1` only changed how fast NEW connections pile up under the frozen ones, not the underlying freeze. Manually killing the wedged backend via `pg_terminate_backend` cleared the symptom for ~10 seconds before the next wedge formed.
+
+Reverted at `ed7de06` so prod was back to the `dc729b1` baseline (still flaky, but no worse than before the session).
+
+### Real fix: cache the read-side queries (commit `444a444`)
+Rewrote `apps/mvp/src/lib/db/queries.ts` so every read-side function has a sibling `*Cached` variant that wraps the raw function in `unstable_cache(fn, [keyParts], { revalidate, tags })`. Pages and the entity API routes switched to the `*Cached` imports; the cron route, pollers, and tests still call the raw uncached functions.
+
+| Function | Cached export | revalidate | tags |
+|---|---|---|---|
+| `getKpiSummary()` | `getKpiSummaryCached` | 30s | `kpis`, `alerts` |
+| `getFilterOptions()` | `getFilterOptionsCached` | 1h | `filter-options` |
+| `getEntities({…})` | `getEntitiesCached` | 30s | `entities` |
+| `getEntityById(id)` | `getEntityByIdCached` | 60s | `entities` |
+| `listAlerts({…})` | `listAlertsCached` | 30s | `alerts` |
+| `getAlertById(id)` | `getAlertByIdCached` | 5min | `alerts` |
+| `getAffectedEntities(field,key,opts)` | `getAffectedEntitiesCached` | 60s | `entities`, `alerts` |
+| `getSimilarExposure(field,key,opts)` | `getSimilarExposureCached` | 5min | `entities`, `alerts` |
+
+Also added `CACHE_TAG_KPIS`, `CACHE_TAG_FILTER_OPTIONS`, `CACHE_TAG_ENTITIES`, `CACHE_TAG_ALERTS` string constants exported from the same module so route handlers don't string-duplicate tag names.
+
+Tag-based invalidation in `apps/mvp/src/app/api/cron/poll/route.ts`: after `runPollers()` returns, if any poller persisted ≥ 1 new alert, the route calls `revalidateTag(CACHE_TAG_ALERTS, "max")` and `revalidateTag(CACHE_TAG_KPIS, "max")`. Next 16 deprecated the 1-arg `revalidateTag(tag)` form and now requires a `cacheLife` profile — `"max"` matches our intent ("flush completely, force fresh fetch"). Pollers that emit zero alerts (the common case for a quiet 5-min tick) don't invalidate, so the cache holds for the full TTL.
+
+Why `unstable_cache` over the newer `'use cache'` directive: turning on `cacheComponents: true` in `next.config.ts` would require auditing every route for the static / cached / Suspense boundary requirements. `unstable_cache` is still supported in Next 16 (Just deprecated in favor of `'use cache'`), works transparently inside `dynamic = "force-dynamic"` pages, and is a 1-line wrap per function. Scope-appropriate for a hotfix; we can migrate to `'use cache'` later as a polish pass.
+
+Cache key encoding: `unstable_cache` JSON-serializes the function arguments and hashes them into the cache key. For `getEntitiesCached({filters,sort,direction,page,pageSize})` that means each unique URL combination is a separate cache entry — default `/?` and `/?riskTiers=critical` and `/?sectors=…` all benefit from caching, just under different keys.
+
+### Local verification
+`pnpm typecheck` clean. `pnpm lint` clean. `pnpm test`: 5 files / 29 tests / all green (tests still hit the raw uncached functions where applicable). `pnpm build`: 5.9s; route table unchanged; `getKpiSummaryCached` etc. show up correctly in the build output as cached server functions.
+
+One typecheck failure caught during the patch: `revalidateTag(tag)` 1-arg form is now a TS error in Next 16. Fixed by passing `"max"` as the second arg. Vercel will surface this as a build failure too, so we catch it pre-deploy.
+
+### Prod verification (post-deploy of `444a444`)
+| Probe | Before (`dc729b1`) | After (`444a444`) |
+|---|---|---|
+| 5 rapid `GET /` | 1/8 ✓, 7/8 hang 15s+ | **5/5 ✓** in 137-226ms each, total elapsed 1.04s |
+| `GET /?riskTiers=critical` | 500 | 200, 161ms, 139 KB |
+| `GET /?sectors=Tokenized Real-World Assets` | 500 | 200, 143ms, 92 KB |
+| `GET /alerts` | 200, 711ms | 200, 421ms |
+| `GET /alerts?windowDays=30&severities=high` | n/a | 200, 124ms |
+| `GET /api/health` | 200, 92ms | 200, 169ms |
+| `GET /api/entities?riskTiers=critical&pageSize=3` | 200, ~200ms | 200, 193ms (RealT first, 0.8532) |
+
+Browser smoke of `https://www.chaindrain.xyz/` rendered the full 875-entity dashboard, all 6 filter dropdowns, top-of-table = RealT / Arbitrum Bridge / Binance / Binance (On-Ramp) / Binance (Validator Operations). KPI 4th card showed **"Alerts (24h) 3"** — bumped from 2 in the prior session, which means a GitHub Actions cron run fired between the deploy and the smoke, and `revalidateTag` correctly invalidated the `kpis` cache so the new alert count surfaced on next request. End-to-end cache + invalidation wiring confirmed working.
+
+### Files modified
+- `apps/mvp/src/lib/db/queries.ts` — added `unstable_cache` import, 4 string-tag constants, and 8 `*Cached` exports wrapping the existing read-side functions. Raw functions kept exported (used by tests and the cron orchestrator).
+- `apps/mvp/src/app/page.tsx` — `getKpiSummary` / `getFilterOptions` / `getEntities` → `*Cached` variants.
+- `apps/mvp/src/app/alerts/page.tsx` — `listAlerts` → `listAlertsCached`.
+- `apps/mvp/src/app/alerts/[alert_id]/page.tsx` — `getAlertById` / `getAffectedEntities` / `getSimilarExposure` → `*Cached` variants.
+- `apps/mvp/src/app/api/entities/route.ts` — `getEntities` → `getEntitiesCached`.
+- `apps/mvp/src/app/api/entities/[entity_id]/route.ts` — `getEntityById` → `getEntityByIdCached`.
+- `apps/mvp/src/app/api/cron/poll/route.ts` — import `revalidateTag` from `next/cache` + the two tag constants; after `runPollers()` returns, if any alert persisted, `revalidateTag(CACHE_TAG_ALERTS, "max")` + `revalidateTag(CACHE_TAG_KPIS, "max")`.
+- `docs/CHANGELOG_DEV.md` — this entry.
+- `docs/AI_CONTEXT.md` — Phase 4 footer note + §8 handoff updated to mention the cache layer.
+- `docs/DECISIONS.md` — new §25 (`unstable_cache` over `'use cache'` directive, scope-appropriate for the hotfix).
+
+### Commits
+- `fd54179` `hotfix: serverless-safe postgres-js config to stop dashboard / from 500-ing intermittently` — **REVERTED** by `ed7de06`. Kept in history because the diagnosis path documented in the message is still useful context if the wedge ever reappears.
+- `ed7de06` `revert: roll back db/index.ts hotfix; max:1 made flakiness worse not better`.
+- `444a444` `fix: wrap read-side queries with unstable_cache so / stops hammering Supavisor` — the real fix.
+
+### Known follow-ups (not blocking Phase 5)
+1. **Migrate `unstable_cache` → `'use cache'` directive.** The skill validator flags `unstable_cache` as deprecated in Next 16. Today's pattern still works; do it during a Phase 5.x polish or before tagging v0.1.0. Path: enable `cacheComponents: true` in `next.config.ts`, audit each page for static/cached/Suspense boundaries, drop the `dynamic = "force-dynamic"` exports, swap the `unstable_cache(...)` wrappers for `'use cache'` directive functions with `cacheLife()` + `cacheTag()`. Skill `next-cache-components/SKILL.md` is the migration guide.
+2. **`getRecentAlertCount` is now unused** (Phase 2 stub for the old KPI #4). Either delete or wrap with `unstable_cache` if any future caller needs it.
+3. **Vercel Deployment Protection** — still on for `chaindrain-mvp` previews. User chose to leave it (single-tenant tool per DECISIONS §14 doesn't need preview SSO, but no friction in the workflow yet either). If preview-deploy testing becomes a thing in Phase 5+, revisit at `Vercel → chaindrain-mvp → Settings → Deployment Protection`.
+4. **The legacy Vercel project `chaindrain` (apps/web)** still auto-deploys on every push and is now showing two consecutive "success" runs for two no-op changes to the MVP. AI_CONTEXT §9 already documents the Ignored Build Step fix — apply when convenient.
+
+### Next steps
+**Phase 5 — Daily digest.** Per `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 5":
+- `apps/mvp/src/app/api/cron/digest/route.ts` (`runtime: nodejs`, `maxDuration: 60`, Bearer-gated on `CRON_SECRET` like the poll route).
+- Vercel Cron, daily `0 9 * * *` — Hobby allows daily, so re-create `apps/mvp/vercel.json` with **only** the daily cron entry. The 5-min poll stays on GitHub Actions per DECISIONS §23.
+- Pulls last-24h alerts via `listAlertsCached({ windowDays: 1, sortField: 'severity', sortDirection: 'asc' })`. For each critical, top-5 affected entities via `getAffectedEntitiesCached(field, key, { limit: 5 })`. The cache layer makes the digest cheap to render even if it ends up being polled by multiple downstream watchers.
+- Plain HTML email via Resend SDK. Env: `RESEND_API_KEY`, `DIGEST_RECIPIENTS` (comma-separated). Subject `Chaindrain Daily — N critical / M high alerts`. No attachments, no images, no unsubscribe link (refuse if it comes up — single-tenant tool).
+- Acceptance: end-to-end test by curling the route with the bearer, expect a 200 + JSON summary + a real email in the user's inbox.
+
+---
+
 ## 2026-05-16 (PM #8) — Phase 4 prod activation: CRON_SECRET set, first real alerts populated, /alerts copy fix
 
 ### Session goals
