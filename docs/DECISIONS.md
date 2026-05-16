@@ -228,3 +228,55 @@ xattr -l node_modules/**/.claude/settings.local.json 2>/dev/null | head   # look
 ```
 
 **See:** `.npmrc`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM #3 entry.
+
+---
+
+## 19. Phase 3 poller architecture: pure classifier + I/O wrapper, no DB mocks in tests
+
+**Decision (2026-05-16, Phase 3):** Each of the 5 pollers in `apps/mvp/src/lib/pollers/` is split into a pure synchronous *classifier* function (e.g. `classifyStablecoinPrices`, `classifyOracleDeviations`, `classifyBridgeReadings`, `classifyAdminTx`, `classifyTvlDrops`) and an async *I/O wrapper* (`pollX(ctx, deps)`) that handles fetch / viem RPC and then delegates to the classifier. Vitest tests cover the classifier with synthetic inputs and the wrapper with a mock `fetch` (when applicable). **Tests do not mock viem and do not touch the live DB.** End-to-end verification (real DB writes, real fanout) is a one-shot smoke script run from a fresh tsx invocation, not a committed test file.
+
+**Rationale:** CURSOR_PROMPT.md "Coding standards" requires "Every poller is unit-testable (vitest): pass a mock fetch, assert alert shape." The classifier seam is the natural place for that: it's the kernel that turns raw observations into `RawAlert[]`, has zero I/O, and is what determines spec compliance (severity thresholds, dependency_key / dependency_field mapping). Mocking viem would require either rebuilding viem's internal RPC plumbing or stubbing `createPublicClient` — both add test complexity without proving spec compliance. Mocking the postgres-js DB layer would prove nothing about the actual fanout query (which is the real risk surface). The live one-shot smoke proves the full pipeline integrates; the unit tests prove the deterministic logic; together they cover the spec without overfitting the test scaffolding.
+
+This pattern is the canonical seam for adding new pollers in Phase 4+ (e.g. an incident-ledger poller pulling rekt.news in a stretch goal). The pure classifier should always be the *first* thing exported.
+
+**See:** `apps/mvp/src/lib/pollers/{stablecoin-depeg,oracle-deviation,bridge-pause,admin-tx,tvl-drop}.ts`, the matching `.test.ts` files, `apps/mvp/src/workers/poll-signals.ts`.
+
+---
+
+## 20. `DependencyField` is a typed union over array AND scalar columns; `computeFanout` branches on it
+
+**Decision (2026-05-16, Phase 3):** `DependencyField` in `apps/mvp/src/lib/pollers/types.ts` is a string-literal union containing both array columns (`stablecoin_dependencies`, `oracle_providers`, `bridge_dependencies`, `chain_deployments`) and scalar columns (`admin_address`, `defillama_slug`). A sibling constant `ARRAY_DEPENDENCY_FIELDS: ReadonlySet<DependencyField>` marks which ones are arrays. `computeFanout(dependency_field, dependency_key)` in `apps/mvp/src/lib/db/queries.ts` checks the set and dispatches:
+- Array fields → `WHERE ${sql(field)} && ARRAY[${key}]::text[]` (hits the existing GIN indexes from Phase 0).
+- Scalar fields → `WHERE ${sql(field)} = ${key}` (B-tree on `admin_address`, plain table scan acceptable for `defillama_slug`).
+
+**Rationale:** Two of the five Phase 3 pollers emit alerts that don't fit the "shared external dependency in an array column" mental model:
+- `admin_tx` keys on `admin_address` (a scalar). Multiple entities can share the same multisig as admin (e.g. several Aave protocols controlled by the same Gnosis Safe), so fanout > 1 is legitimate.
+- `tvl_drop` keys on `defillama_slug` (also scalar). Each protocol has its own slug; fanout is typically 1 but the same query path generalizes if a future poller emits multiple alerts per slug.
+
+Refusing to model these would force the orchestrator to special-case admin_tx and tvl_drop. Threading both through the same `dependency_field` discriminator keeps `runPollers` simple and lets Phase 4's contagion view reuse `computeFanout` uniformly. The CHECK constraint on `chaindrain.alert.signal_type` doesn't constrain `dependency_field`, so the schema doesn't have to change when we add a new dependency-shape category later.
+
+**See:** `apps/mvp/src/lib/pollers/types.ts:DependencyField`, `apps/mvp/src/lib/db/queries.ts:computeFanout`, `supabase/migrations/20260517000000_alerts.sql`.
+
+---
+
+## 21. `runPollers` writes per-alert, not per-poller; no wrapping transaction
+
+**Decision (2026-05-16, Phase 3):** The orchestrator at `apps/mvp/src/workers/poll-signals.ts` persists each alert independently inside the per-poller loop: compute fanout → `insertAlert` → push to `persisted` array. A failed `insertAlert` for one alert is caught with `console.error` and does not block the rest. No outer `BEGIN/COMMIT` wraps the run.
+
+**Rationale:** CURSOR_PROMPT.md says "for each alert: compute `fanout_count` and `fanout_tvl_usd` ... Persist alert + fanout numbers atomically." Atomicity at the *row* level — fanout numbers and the alert row written in the same INSERT — is what the spec actually requires; the prose doesn't imply wrapping the whole 5-poller run in a transaction. A run-wide transaction would (a) hold a long-lived connection across slow external HTTP calls (CoinGecko, Etherscan rate-limited, etc.), increasing the chance of pooler timeouts on the Supavisor transaction-mode pooler, and (b) cause one flaky alert insert to nuke an otherwise good run's data.
+
+Per-alert writes also give Phase 4's `/alerts` UI the most-recent-first ordering for free even if a cron run partially fails — the persisted alerts show up immediately, the failed ones get retried 5 minutes later when the next cron fires.
+
+**See:** `apps/mvp/src/workers/poll-signals.ts:runPollers`, `apps/mvp/src/lib/db/queries.ts:insertAlert`.
+
+---
+
+## 22. Cron route hard-fails when `CRON_SECRET` is unset (500), not silently disables
+
+**Decision (2026-05-16, Phase 3):** `apps/mvp/src/app/api/cron/poll/route.ts` returns HTTP 500 with `{ ok: false, error: "cron_secret_not_configured" }` when `CRON_SECRET` is absent, *before* the auth check. It does not fall back to "any caller is allowed" or "skip the run".
+
+**Rationale:** A misconfigured cron is a deploy-time bug, not a runtime condition. Returning 500 makes Vercel's cron dashboard mark the schedule as failing, which is the loudest possible "fix me" signal. Returning 200 with `skipped: true` would mask the misconfiguration and the operator wouldn't notice until they queried the empty `chaindrain.alert` table. Returning 401 would be misleading — there's no "wrong credential" to fix, the credential simply doesn't exist server-side.
+
+The pollers themselves degrade gracefully on missing optional config: `admin-tx` logs a `console.warn` and returns empty when `ETHERSCAN_API_KEY` is unset; the others have hard-coded free public endpoints. The hard fail is reserved for the *route-level secret* that gates the entire cron path.
+
+**See:** `apps/mvp/src/app/api/cron/poll/route.ts`.

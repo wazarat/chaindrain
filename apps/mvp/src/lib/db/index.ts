@@ -26,3 +26,10 @@ function getPg() {
 
 export const sql = getPg();
 export const db = drizzle(sql, { schema });
+
+export async function closeDb(): Promise<void> {
+  if (global.__chaindrainPg) {
+    await global.__chaindrainPg.end({ timeout: 5 });
+    global.__chaindrainPg = undefined;
+  }
+}

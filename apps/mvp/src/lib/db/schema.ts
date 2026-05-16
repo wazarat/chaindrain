@@ -1,8 +1,25 @@
-import { pgTable, pgSchema, index, foreignKey, uuid, numeric, text, timestamp, integer, boolean, date } from "drizzle-orm/pg-core"
+import { pgTable, pgSchema, index, check, uuid, timestamp, text, jsonb, integer, numeric, foreignKey, boolean, date } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const chaindrain = pgSchema("chaindrain");
 
+
+export const alertInChaindrain = chaindrain.table("alert", {
+	alert_id: uuid().defaultRandom().primaryKey().notNull(),
+	detected_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow().notNull(),
+	signal_type: text().notNull(),
+	severity: text().notNull(),
+	dependency_key: text().notNull(),
+	dependency_field: text().notNull(),
+	raw_signal: jsonb().notNull(),
+	fanout_count: integer(),
+	fanout_tvl_usd: numeric(),
+}, (table) => [
+	index("idx_alert_detected").using("btree", table.detected_at.desc().nullsFirst().op("timestamptz_ops")),
+	index("idx_alert_severity").using("btree", table.severity.asc().nullsLast().op("text_ops"), table.detected_at.desc().nullsFirst().op("text_ops")),
+	check("alert_severity_chk", sql`severity = ANY (ARRAY['critical'::text, 'high'::text, 'medium'::text, 'low'::text])`),
+	check("alert_signal_type_chk", sql`signal_type = ANY (ARRAY['stablecoin_depeg'::text, 'oracle_deviation'::text, 'bridge_pause'::text, 'admin_tx'::text, 'tvl_drop'::text])`),
+]);
 
 export const tier_stateInChaindrain = chaindrain.table("tier_state", {
 	entity_id: uuid().primaryKey().notNull(),

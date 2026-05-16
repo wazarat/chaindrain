@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 2 DONE ✓ (locally)**. SCORE leg dashboard renders; `/api/entities?riskTiers=critical` returns 59 rows with RealT (`risk_score=0.8532`) at top. `pnpm build` clean. Ready for production push + Phase 3 (DETECT leg).
+**Last updated:** 2026-05-16 — **Phase 3 DONE ✓ (locally)**. DETECT leg: `chaindrain.alert` table live in Supabase; 5 pollers (stablecoin-depeg / oracle-deviation / bridge-pause / admin-tx / tvl-drop) wired through `src/workers/poll-signals.ts`; `/api/cron/poll` protected by `CRON_SECRET` Bearer auth; `vercel.json` cron `*/5 * * * *`. `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E synthetic smoke: USDC=0.97 → critical alert, `fanout_count=70`, `fanout_tvl_usd=$39.5B` (cleaned up). Ready for prod push, Vercel env-var setup (`CRON_SECRET` + `ETHERSCAN_API_KEY`), and Phase 4 (FAN OUT leg). Phase 2 prod also smoke-verified live: `GET /api/entities?riskTiers=critical&pageSize=1` returns `total=59`, top=RealT (0.8532) in 213ms.
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -46,19 +46,25 @@ Single-tenant, IP-allowlisted on Vercel. **No auth in v1.**
 chaindrain/
 ├── apps/
 │   ├── web/        # legacy Next.js 15.0.0-rc.0 — frozen, will be removed in a Phase 6 cleanup
-│   └── mvp/        # Phase 1+2 — Next.js 16.2.6, dashboard renders, prod build clean
+│   └── mvp/        # Phase 1+2+3 — Next.js 16.2.6, dashboard renders, prod build clean
 │       ├── src/app/layout.tsx, globals.css, page.tsx, favicon.ico   ← Phase 2 — server-rendered SCORE dashboard
 │       ├── src/app/api/health/route.ts   ← Phase 1 — Drizzle count, returns { ok: true, count }
 │       ├── src/app/api/entities/route.ts                ← Phase 2 — paginated, zod-validated query params
 │       ├── src/app/api/entities/[entity_id]/route.ts    ← Phase 2 — single mvp_master row, zod-validated UUID
+│       ├── src/app/api/cron/poll/route.ts               ← Phase 3 — Bearer CRON_SECRET, calls runPollers()
 │       ├── src/components/{kpi-cards,filter-bar,multi-select,entities-table,entity-drawer}.tsx  ← Phase 2 UI
+│       ├── src/lib/pollers/{types,stablecoin-depeg,oracle-deviation,bridge-pause,admin-tx,tvl-drop}.ts   ← Phase 3 — 5 pure poller fns + shared types
+│       ├── src/lib/pollers/*.test.ts                    ← Phase 3 — vitest unit tests (29 cases, all green)
+│       ├── src/workers/poll-signals.ts                  ← Phase 3 — orchestrator; tsx-runnable via `pnpm poll`; also called from cron route
 │       ├── src/lib/supabase/{server,client}.ts   ← service-role + anon clients on `chaindrain` schema
 │       ├── src/lib/db/{index,queries,schema,relations}.ts + meta/   ← queries.ts is the ONLY SQL surface; routes import from it
 │       ├── src/lib/api/schemas.ts                       ← Phase 2 — entitiesQuerySchema + entityIdParamsSchema (zod)
 │       ├── src/lib/{utils,url-state}.ts                 ← Phase 2 — formatters / risk-tier classes / URL search-string helpers
 │       ├── drizzle.config.ts   ← schemaFilter ['chaindrain'], uses DATABASE_URL_SESSION
-│       ├── .env.local (gitignored) + .env.local.example
-│       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10, @radix-ui/react-dialog ^1.1.15, lucide-react ^0.435.0, clsx ^2.1.1
+│       ├── vercel.json   ← Phase 3 — { "crons": [{ "path": "/api/cron/poll", "schedule": "*/5 * * * *" }] }
+│       ├── vitest.config.ts   ← Phase 3 — `pool: "forks"`, includes src/**/*.test.ts
+│       ├── .env.local (gitignored) + .env.local.example   ← Phase 3 added CRON_SECRET + ETHERSCAN_API_KEY
+│       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10, @radix-ui/react-dialog ^1.1.15, lucide-react ^0.435.0, clsx ^2.1.1, viem ^2.49.3, vitest ^4.1.6
 │       ├── tsconfig.json, next.config.ts, eslint.config.mjs, postcss.config.mjs
 │       └── public/
 ├── packages/shared-types/  # legacy TS types, kept until apps/web is removed
@@ -67,7 +73,8 @@ chaindrain/
 │   ├── 20250101000100…001100 (11 more)                            legacy, all DROPped by next entry
 │   ├── 20260516000000_drop_legacy_public.sql                      Phase 0 — drops legacy public.*
 │   ├── 20260516000100_chaindrain_schema.sql                       Phase 0 — chaindrain.* tables + view
-│   └── 20260516000200_chaindrain_grants.sql                       Phase 0 — anon SELECT, service_role ALL
+│   ├── 20260516000200_chaindrain_grants.sql                       Phase 0 — anon SELECT, service_role ALL
+│   └── 20260517000000_alerts.sql                                  Phase 3 — chaindrain.alert + 2 indexes + 2 CHECK constraints + grants
 ├── scripts/
 │   ├── load_seed.mjs        ← canonical 875-row JSON loader (idempotent, runs in 1.5s)
 │   ├── package.json + package-lock.json + node_modules/   ← outside the pnpm workspace
@@ -116,6 +123,7 @@ The `chaindrain_export/` bundle (in `~/Downloads/`) is the input dataset. Key fi
 | `chaindrain.dependency_fingerprint` | 875 | oracle_providers[], bridge_dependencies[], stablecoin_dependencies[], dvn_configuration + per-field `*_confidence` flags |
 | `chaindrain.tier_state` | 875 | risk_score, risk_tier (critical/high/medium/low), coverage_tier (core/monitored/archive/excluded), blast_radius_usd, state |
 | `chaindrain.mvp_master` (view) | 875 | All four joined on `entity_id` |
+| `chaindrain.alert` | 0 (live) | Phase 3 — alert_id pk, detected_at, signal_type (CHECK), severity (CHECK), dependency_key, dependency_field, raw_signal jsonb, fanout_count, fanout_tvl_usd. Indexes: idx_alert_detected (detected_at DESC), idx_alert_severity ((severity, detected_at DESC)). |
 
 **Indexes (already created):** GIN on `chain_deployments`, `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`. B-tree on `sector`, `tvl_usd DESC NULLS LAST`, `defillama_slug`, `proxy_pattern`, `upgrade_authority_type`, `audits_tier`, `admin_address`, `primary_contract_address`, `dvn_configuration`, `risk_tier`, `coverage_tier`, `risk_score DESC`, `state`.
 
@@ -197,8 +205,23 @@ Idempotent — `TRUNCATE chaindrain.identity RESTART IDENTITY CASCADE` first. Ru
 - **Acceptance verified:** `riskTiers=critical` → 59 rows, RealT first (`risk_score=0.8532`). Default unfiltered view shows 875 entities. Sector="Tokenized Real-World Assets" → 28 rows. Multi-filter (`oracles=Chainlink&riskTiers=critical&sort=tvl_usd`) → 13 rows, Binance Validator Operations top. Invalid query params → 400 with structured zod issue list.
 - New deps added in this phase: `@radix-ui/react-dialog ^1.1.15`, `lucide-react ^0.435.0`, `clsx ^2.1.1`. No `tailwind-merge` needed — Tailwind v4 + clsx is sufficient.
 
-### Phase 3 — DETECT leg (5 pollers + alerts table)
-New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uuid pk, detected_at timestamptz, signal_type text, severity text, dependency_key text, dependency_field text, raw_signal jsonb, fanout_count int, fanout_tvl_usd numeric)` + 2 indexes. 5 pure poller fns under `src/lib/pollers/`: stablecoin-depeg (CoinGecko), oracle-deviation (Chainlink RPC + Pyth Hermes), bridge-pause (LayerZero RPC + Wormholescan + Axelar), admin-tx (Etherscan free, top 100 entities, sequential 250ms sleep), tvl-drop (DefiLlama). Orchestrator at `src/workers/poll-signals.ts` + `src/app/api/cron/poll/route.ts`. `vercel.json` cron `*/5 * * * *`. Vitest unit tests per poller. **Acceptance:** synthetic USDC=0.97 → critical alert, `fanout_count > 50`. Need `ETHERSCAN_API_KEY` (free, 5 req/s) + `CRON_SECRET` env vars.
+### Phase 3 — DETECT leg — DONE ✓ (locally, 2026-05-16)
+Migration `20260517000000_alerts.sql` applied (alert_id pk + indexes + CHECK constraints for signal_type/severity + grants). Drizzle re-introspect lifted the table into `src/lib/db/schema.ts` (5 tables / 69 cols now). 5 pure poller fns at `src/lib/pollers/`:
+- `stablecoin-depeg.ts` — CoinGecko `/simple/price` for 7 stables (USDC/USDT/DAI/FDUSD/USDS/USDe/USD0); thresholds 0.005 → high, 0.02 → critical. Exposes pure `classifyStablecoinPrices` for tests.
+- `oracle-deviation.ts` — viem Chainlink ETH/BTC/LINK feeds via `https://eth.llamarpc.com` (overridable via `ETH_RPC_URL`) + Pyth Hermes `/v2/updates/price/latest` for the same pairs + CoinGecko as the reference. Thresholds 0.01 medium, 0.05 high. Exposes `classifyOracleDeviations(input)`.
+- `bridge-pause.ts` — LayerZero V2 EndpointV2 (`0x1a44…728c`) `paused()` via viem (graceful null on revert) + Wormholescan `/v1/heartbeats` (alerts when distinct active guardians < 13) + Axelarscan `/getChainMaintainers` (alert per chain with maintainers < 3). All → severity=critical. Exposes `classifyBridgeReadings`.
+- `admin-tx.ts` — top 100 entities by risk_score (UUID + admin_address + upgrade_authority_type) sourced via `getTopAdminWatchEntities()`, Etherscan `txlist` (5 req/s, 250ms sleep between calls). Filters txs ≥ now − 5min. Severity=high for EOA/Multisig, medium otherwise. Dependency_field=`admin_address` (scalar). Skips with `console.warn` when `ETHERSCAN_API_KEY` missing.
+- `tvl-drop.ts` — DefiLlama `/protocols`, joins on `defillama_slug` from `getWatchedDefillamaSlugs()`; thresholds `change_1d ≤ -20%` → high, `≤ -40%` → critical. Dependency_field=`defillama_slug` (scalar).
+
+Orchestrator `src/workers/poll-signals.ts` (`pnpm poll`, tsx-runnable): fetches admin watchlist + slugs once, runs all 5 pollers via `Promise.allSettled`, per-poller try/catch (`console.error({ pollster, error })`), computes fanout via `computeFanout(dependency_field, dependency_key)` (uses GIN `&&` for array fields, scalar `=` for `admin_address`/`defillama_slug`), persists each alert atomically with `insertAlert`. Returns `PollRunSummary` (started_at, finished_at, elapsed_ms, per-poller outcomes, persisted alerts).
+
+`src/app/api/cron/poll/route.ts` (`runtime: nodejs`, `dynamic: force-dynamic`, `maxDuration: 60`): rejects with 500 `cron_secret_not_configured` if `CRON_SECRET` unset; 401 `unauthorized` on missing/wrong Bearer; else runs the orchestrator and returns `{ ok: true, summary }`. Accepts both GET and POST (Vercel Cron sends GET).
+
+`apps/mvp/vercel.json` — `{ "crons": [{ "path": "/api/cron/poll", "schedule": "*/5 * * * *" }] }`.
+
+Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5 test files, **29 tests, all passing**. Headline test: synthetic USDC=0.97 → 1 critical alert with `dependency_key='USDC'`, `dependency_field='stablecoin_dependencies'`. Live E2E smoke (one-off script, then deleted) proved end-to-end pipeline: classifier → `computeFanout` → `insertAlert` → readback → cleanup. Live USDC fanout = **70 entities, $39.5B blast radius** (spec's `> 50` requirement satisfied).
+
+`apps/mvp/.env.local.example` now documents `CRON_SECRET=` (generate with `openssl rand -hex 32`), `ETHERSCAN_API_KEY=` (free at etherscan.io/myapikey), optional `ETH_RPC_URL=` override.
 
 ### Phase 4 — FAN OUT leg (the differentiator)
 `/alerts` index (last 7 days, sortable by severity/fanout_tvl_usd/detected_at) + `/alerts/[alert_id]` contagion view: header (signal_type/severity/dependency_key/raw_signal JSON) + affected entities table (ordered by `blast_radius_usd DESC`) + similar-exposure panel (Method B query from `mvp_scope_spec.md` §5.2). All <200ms via the GIN indexes already in place.
@@ -208,21 +231,33 @@ New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uu
 
 ---
 
-## 8. Where the chat paused (handoff to Phase 3)
+## 8. Where the chat paused (handoff to Phase 4)
 
-**Phase 2 fully closed locally.** Dashboard at `/` renders all 875 entities with sortable table + filter bar + KPI cards + Radix drawer. `pnpm typecheck`, `pnpm lint`, and `pnpm build` are all clean. Acceptance: `riskTiers=critical` → 59 rows, RealT top (`risk_score=0.8532`). Phase 2 commit pending push to `main`; once pushed, Vercel will auto-deploy `chaindrain-mvp.vercel.app` and a manual smoke against the live `/?riskTiers=critical` URL is the final close-out for the user.
+**Phase 3 fully closed locally.** Migration applied to prod Supabase, Drizzle re-introspected, 5 pollers + orchestrator + cron route + vitest tests all green. `pnpm typecheck/lint/test/build` all clean. End-to-end acceptance proven via one-off live smoke (USDC=0.97 → critical alert with `fanout_count=70, fanout_tvl_usd=$39.5B`, persisted + readback + cleanup). Local cron-route auth gating verified (no token → 401, wrong token → 401, missing `CRON_SECRET` env → 500 with `cron_secret_not_configured`). 0 alert rows currently persisted in prod (clean slate for the first cron fire).
 
-**One trap from Phase 1 still relevant** (see DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, the cause is almost certainly that a sandboxed run wrote a fresh `.pnpm-store/v3/` in-repo, and `.claude/settings.local.json` files inside packages have the macOS `com.apple.provenance` xattr blocking `copyfile`. Recipe: `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]` so pnpm can write to the global `~/Library/pnpm/store` (which the root `.npmrc` is already pinned to).
+**Phase 3 commit pending push to `main`.** Once pushed:
+1. Vercel auto-deploy of `chaindrain-mvp.vercel.app` will pick up the new route + `vercel.json` cron config.
+2. **User must add `CRON_SECRET` to Vercel Production+Preview+Development env vars before the first cron fire.** Value generated this session: `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846`. Also confirm `ETHERSCAN_API_KEY` is in Preview as well as Production (user said Production is set).
+3. **First cron fire** will happen within 5 minutes of deploy completion. Verify via Vercel dashboard → Crons (should show a green tick) and SQL probe: `SELECT signal_type, severity, dependency_key, fanout_count, fanout_tvl_usd, detected_at FROM chaindrain.alert ORDER BY detected_at DESC LIMIT 20;`. If pollers degrade gracefully (no alerts produced), the row count stays 0 and the route still returns 200 — that's normal and expected for a quiet 5-minute window.
+4. Manual smoke: `curl -H "Authorization: Bearer $CRON_SECRET" https://chaindrain-mvp.vercel.app/api/cron/poll` should return `{ ok: true, summary: { ... per-poller outcomes ... } }`.
 
-**Phase 2 design notes worth carrying forward:**
-- The Drizzle introspect output flattens Postgres `text[]` columns on the `mvp_master` view to plain `text()`. Don't trust the generated view types for arrays — use raw `sql` (postgres-js) tagged templates from `src/lib/db/queries.ts`. `chain_deployments`, `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`, and `audit_firms` all come back as JS arrays at runtime via postgres-js's native array decoding.
-- React 19's new lint rule `react-hooks/set-state-in-effect` blocks naive `useEffect(() => setX(prop))` patterns. We adopted two workarounds: (a) **key-based remount** for the entity drawer — `<DrawerInner key={entityId} />` resets local state without touching effects, and (b) the **"adjust state during render"** pattern in `filter-bar.tsx` — `if (lastUrlSearch !== current.search) { setLastUrlSearch(current.search); setSearchInput(current.search); }`. Keep both patterns when adding more URL-driven inputs in Phase 3 forms.
+**Out of scope for Phase 3 (intentionally deferred, refuse if asked):** an `/alerts` UI surface (that's Phase 4), email/Slack/Discord notifications (Phase 5), additional pollers, alert replay, LLM reasoning. Alert dedup is also deferred — if a signal stays in the bad state for an hour, the cron will emit 12 alerts. We'll revisit in Phase 4 once the UI exposes the noise.
 
-**To start Phase 3:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 3. Spec lives in `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 3". First step is the `chaindrain.alert` migration + 5 pollers + `vercel.json` cron. Need a free Etherscan API key + a generated `CRON_SECRET` env var before that phase ships.
+**Two traps from earlier phases still relevant:**
+- **pnpm store-dir** (DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, run `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]`. The root `.npmrc` already pins `store-dir=~/Library/pnpm/store`. Hit again briefly this session — confirmed the recipe still works.
+- **React 19's `react-hooks/set-state-in-effect`** (Phase 2 design notes): use key-based remount (e.g. `<DrawerInner key={entityId} />`) or the "adjust state during render" pattern for URL-driven inputs. Carry forward into Phase 4 alert detail components.
+
+**Phase 3 design notes worth carrying forward:**
+- **Pure poller pattern:** each poller exposes a *pure classifier* (e.g. `classifyStablecoinPrices`, `classifyOracleDeviations`, `classifyBridgeReadings`, `classifyAdminTx`, `classifyTvlDrops`) for unit tests, and an *I/O wrapper* (`pollX(ctx, deps)`) that wires fetch/RPC. Tests cover the classifier with synthetic inputs; the wrapper is integration-tested through the live cron. Don't add tests that mock viem — use the classifier seam.
+- **Fanout abstraction:** `DependencyField` is now a union over array columns (`stablecoin_dependencies` / `oracle_providers` / `bridge_dependencies` / `chain_deployments`) AND scalar columns (`admin_address` / `defillama_slug`). The `ARRAY_DEPENDENCY_FIELDS` constant in `src/lib/pollers/types.ts` is the runtime branch — `computeFanout` uses `&&` for arrays and `=` for scalars. When Phase 4 adds the contagion view, reuse `computeFanout` (it's already the canonical query) and ride the GIN indexes that already exist on the array columns.
+- **Orchestrator atomicity:** `runPollers` does *per-alert* writes (compute fanout → insertAlert), not a single transaction. If the DB drops mid-run, you get a partial alert set, not zero. This matches the spec's "persist alert + fanout numbers atomically" requirement at the row level. Don't wrap in a transaction in Phase 4 unless you have a concrete reason.
+- **postgres-js jsonb writes:** explicit `JSON.stringify` + `::jsonb` cast in `insertAlert`. `sql.json(...)` from postgres-js has a strict `JSONValue` type that's incompatible with our `Record<string, unknown>` raw_signal shape. The stringify+cast path is cleaner and type-safe.
+
+**To start Phase 4:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 4. Spec lives in `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 4". First step is `app/alerts/page.tsx` (7-day index, sortable by severity / fanout_tvl_usd / detected_at) + `app/alerts/[alert_id]/page.tsx` (header + affected entities table ordered by `blast_radius_usd DESC` + similar-exposure panel via the spec's Method B query). All queries through `src/lib/db/queries.ts`; reuse `computeFanout` for the affected table; add a new `getSimilarExposure(dependency_field, dependency_key, limit)` for the Method B panel.
 
 **Commit using the standard env-var trick** so the hook strips the Cursor trailer:
 ```bash
 GIT_AUTHOR_EMAIL=wazarat@outlook.com GIT_AUTHOR_NAME=wazarat \
 GIT_COMMITTER_EMAIL=wazarat@outlook.com GIT_COMMITTER_NAME=wazarat \
-git commit -m "phase 2: ..."
+git commit -m "phase 3: ..."
 ```

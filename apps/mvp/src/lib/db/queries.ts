@@ -1,4 +1,11 @@
 import { sql } from "./index";
+import {
+  ARRAY_DEPENDENCY_FIELDS,
+  type AlertSeverity,
+  type AlertSignalType,
+  type DependencyField,
+} from "../pollers/types";
+import type { AdminWatchEntity } from "../pollers/admin-tx";
 
 export type RiskTier = "critical" | "high" | "medium" | "low";
 export type CoverageTier = "core" | "monitored" | "archive" | "excluded";
@@ -296,4 +303,115 @@ export async function getEntityById(
     LIMIT 1
   `;
   return rows[0] ?? null;
+}
+
+export interface AlertInsert {
+  signal_type: AlertSignalType;
+  severity: AlertSeverity;
+  dependency_key: string;
+  dependency_field: DependencyField;
+  raw_signal: Record<string, unknown>;
+  fanout_count: number;
+  fanout_tvl_usd: string | number;
+}
+
+export interface AlertRow extends AlertInsert {
+  alert_id: string;
+  detected_at: string;
+}
+
+export async function insertAlert(alert: AlertInsert): Promise<AlertRow> {
+  const rawSignal = JSON.stringify(alert.raw_signal);
+  const rows = await sql<AlertRow[]>`
+    INSERT INTO chaindrain.alert
+      (signal_type, severity, dependency_key, dependency_field,
+       raw_signal, fanout_count, fanout_tvl_usd)
+    VALUES
+      (${alert.signal_type}, ${alert.severity}, ${alert.dependency_key},
+       ${alert.dependency_field},
+       ${rawSignal}::jsonb,
+       ${alert.fanout_count}, ${alert.fanout_tvl_usd})
+    RETURNING alert_id, detected_at,
+              signal_type, severity, dependency_key, dependency_field,
+              raw_signal, fanout_count, fanout_tvl_usd
+  `;
+  return rows[0]!;
+}
+
+export interface FanoutResult {
+  fanout_count: number;
+  fanout_tvl_usd: string;
+}
+
+export async function computeFanout(
+  dependency_field: DependencyField,
+  dependency_key: string,
+): Promise<FanoutResult> {
+  let rows: { count: string; tvl: string | null }[];
+  if (ARRAY_DEPENDENCY_FIELDS.has(dependency_field)) {
+    rows = await sql<{ count: string; tvl: string | null }[]>`
+      SELECT COUNT(*)::text AS count,
+             COALESCE(SUM(blast_radius_usd), 0)::text AS tvl
+      FROM chaindrain.mvp_master
+      WHERE ${sql(dependency_field)} && ARRAY[${dependency_key}]::text[]
+    `;
+  } else {
+    rows = await sql<{ count: string; tvl: string | null }[]>`
+      SELECT COUNT(*)::text AS count,
+             COALESCE(SUM(blast_radius_usd), 0)::text AS tvl
+      FROM chaindrain.mvp_master
+      WHERE ${sql(dependency_field)} = ${dependency_key}
+    `;
+  }
+  const row = rows[0];
+  return {
+    fanout_count: Number(row?.count ?? 0),
+    fanout_tvl_usd: row?.tvl ?? "0",
+  };
+}
+
+export async function getTopAdminWatchEntities(
+  limit: number,
+): Promise<AdminWatchEntity[]> {
+  const rows = await sql<
+    {
+      entity_id: string;
+      name: string;
+      admin_address: string;
+      upgrade_authority_type: string | null;
+    }[]
+  >`
+    SELECT entity_id, name, admin_address, upgrade_authority_type
+    FROM chaindrain.mvp_master
+    WHERE admin_address IS NOT NULL
+      AND admin_address ~ '^0x[0-9a-fA-F]{40}$'
+    ORDER BY risk_score DESC NULLS LAST
+    LIMIT ${limit}
+  `;
+  return rows.map((r) => ({
+    entity_id: r.entity_id,
+    name: r.name,
+    admin_address: r.admin_address,
+    upgrade_authority_type: r.upgrade_authority_type,
+  }));
+}
+
+export async function getWatchedDefillamaSlugs(): Promise<string[]> {
+  const rows = await sql<{ defillama_slug: string }[]>`
+    SELECT DISTINCT defillama_slug
+    FROM chaindrain.mvp_master
+    WHERE defillama_slug IS NOT NULL AND defillama_slug <> ''
+  `;
+  return rows.map((r) => r.defillama_slug);
+}
+
+export async function getRecentAlertCount(
+  windowHours: number,
+): Promise<number> {
+  const rows = await sql<{ count: string }[]>`
+    SELECT COUNT(*)::text AS count
+    FROM chaindrain.alert
+    WHERE detected_at >= now() - (${windowHours}::int * INTERVAL '1 hour')
+  `;
+  return Number(rows[0]?.count ?? 0);
 }
