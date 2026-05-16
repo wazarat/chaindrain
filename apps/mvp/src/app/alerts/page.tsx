@@ -1,5 +1,5 @@
 import { Suspense } from "react";
-import { listAlerts } from "@/lib/db/queries";
+import { listAlertsCached } from "@/lib/db/queries";
 import { alertsQuerySchema } from "@/lib/api/schemas";
 import { AlertsFilterBar } from "@/components/alerts-filter-bar";
 import { AlertsTable } from "@/components/alerts-table";
@@ -22,7 +22,7 @@ export default async function AlertsIndexPage({ searchParams }: PageProps) {
   const parsed = alertsQuerySchema.safeParse(flat);
   const params = parsed.success ? parsed.data : alertsQuerySchema.parse({});
 
-  const list = await listAlerts({
+  const list = await listAlertsCached({
     windowDays: params.windowDays,
     signalTypes: params.signalTypes,
     severities: params.severities,

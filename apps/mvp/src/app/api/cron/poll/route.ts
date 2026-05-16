@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
+import { revalidateTag } from "next/cache";
 import { runPollers } from "@/workers/poll-signals";
+import { CACHE_TAG_ALERTS, CACHE_TAG_KPIS } from "@/lib/db/queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -25,6 +27,14 @@ export async function GET(request: Request) {
 
   try {
     const summary = await runPollers();
+    const persistedCount = summary.pollers.reduce(
+      (acc, p) => acc + p.alerts_persisted,
+      0,
+    );
+    if (persistedCount > 0) {
+      revalidateTag(CACHE_TAG_ALERTS, "max");
+      revalidateTag(CACHE_TAG_KPIS, "max");
+    }
     return NextResponse.json({ ok: true, summary });
   } catch (error) {
     console.error({ route: "cron/poll", error: String(error) });

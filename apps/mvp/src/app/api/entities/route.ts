@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { entitiesQuerySchema, parseSearchParams } from "@/lib/api/schemas";
-import { getEntities } from "@/lib/db/queries";
+import { getEntitiesCached } from "@/lib/db/queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function GET(request: Request) {
     const raw = parseSearchParams(url.searchParams);
     const params = entitiesQuerySchema.parse(raw);
 
-    const result = await getEntities({
+    const result = await getEntitiesCached({
       filters: {
         sectors: params.sectors,
         riskTiers: params.riskTiers,

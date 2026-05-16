@@ -1,8 +1,8 @@
 import { Suspense } from "react";
 import {
-  getEntities,
-  getFilterOptions,
-  getKpiSummary,
+  getEntitiesCached,
+  getFilterOptionsCached,
+  getKpiSummaryCached,
 } from "@/lib/db/queries";
 import { entitiesQuerySchema } from "@/lib/api/schemas";
 import { KpiCards } from "@/components/kpi-cards";
@@ -30,9 +30,9 @@ export default async function Home({ searchParams }: PageProps) {
     : entitiesQuerySchema.parse({});
 
   const [kpis, options, list] = await Promise.all([
-    getKpiSummary(),
-    getFilterOptions(),
-    getEntities({
+    getKpiSummaryCached(),
+    getFilterOptionsCached(),
+    getEntitiesCached({
       filters: {
         sectors: params.sectors,
         riskTiers: params.riskTiers,

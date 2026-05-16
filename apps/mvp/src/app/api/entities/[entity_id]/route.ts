@@ -1,7 +1,7 @@
 import { NextResponse } from "next/server";
 import { ZodError } from "zod";
 import { entityIdParamsSchema } from "@/lib/api/schemas";
-import { getEntityById } from "@/lib/db/queries";
+import { getEntityByIdCached } from "@/lib/db/queries";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
@@ -12,7 +12,7 @@ export async function GET(
 ) {
   try {
     const params = entityIdParamsSchema.parse(await ctx.params);
-    const entity = await getEntityById(params.entity_id);
+    const entity = await getEntityByIdCached(params.entity_id);
     if (!entity) {
       return NextResponse.json(
         { ok: false, error: "not_found" },

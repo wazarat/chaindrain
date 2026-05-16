@@ -1,9 +1,9 @@
 import { notFound } from "next/navigation";
 import {
   defaultSimilarVia,
-  getAffectedEntities,
-  getAlertById,
-  getSimilarExposure,
+  getAffectedEntitiesCached,
+  getAlertByIdCached,
+  getSimilarExposureCached,
 } from "@/lib/db/queries";
 import { alertIdParamsSchema } from "@/lib/api/schemas";
 import { AffectedEntitiesTable } from "@/components/affected-entities-table";
@@ -26,7 +26,7 @@ export default async function AlertDetailPage({ params }: PageProps) {
   }
   const alertId = parsed.data.alert_id;
 
-  const alert = await getAlertById(alertId);
+  const alert = await getAlertByIdCached(alertId);
   if (!alert) {
     notFound();
   }
@@ -34,10 +34,10 @@ export default async function AlertDetailPage({ params }: PageProps) {
   const similarVia = defaultSimilarVia(alert.dependency_field);
 
   const [affected, similar] = await Promise.all([
-    getAffectedEntities(alert.dependency_field, alert.dependency_key, {
+    getAffectedEntitiesCached(alert.dependency_field, alert.dependency_key, {
       limit: 200,
     }),
-    getSimilarExposure(alert.dependency_field, alert.dependency_key, {
+    getSimilarExposureCached(alert.dependency_field, alert.dependency_key, {
       similarVia,
       limit: 10,
     }),

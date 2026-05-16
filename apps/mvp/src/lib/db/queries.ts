@@ -1,3 +1,4 @@
+import { unstable_cache } from "next/cache";
 import { sql } from "./index";
 import {
   ARRAY_DEPENDENCY_FIELDS,
@@ -6,6 +7,11 @@ import {
   type DependencyField,
 } from "../pollers/types";
 import type { AdminWatchEntity } from "../pollers/admin-tx";
+
+export const CACHE_TAG_KPIS = "kpis";
+export const CACHE_TAG_FILTER_OPTIONS = "filter-options";
+export const CACHE_TAG_ENTITIES = "entities";
+export const CACHE_TAG_ALERTS = "alerts";
 
 export type { AlertSeverity, AlertSignalType, DependencyField } from "../pollers/types";
 
@@ -138,6 +144,12 @@ export async function countIdentities(): Promise<number> {
   return Number(rows[0]?.count ?? 0);
 }
 
+export const getKpiSummaryCached = unstable_cache(
+  async (): Promise<KpiSummary> => getKpiSummary(),
+  ["kpi-summary-v1"],
+  { revalidate: 30, tags: [CACHE_TAG_KPIS, CACHE_TAG_ALERTS] },
+);
+
 export async function getKpiSummary(): Promise<KpiSummary> {
   const [entityRow, alertRow] = await Promise.all([
     sql<
@@ -178,6 +190,12 @@ export async function getKpiSummary(): Promise<KpiSummary> {
     alerts_24h_critical: Number(a?.critical ?? 0),
   };
 }
+
+export const getFilterOptionsCached = unstable_cache(
+  async (): Promise<FilterOptions> => getFilterOptions(),
+  ["filter-options-v1"],
+  { revalidate: 3600, tags: [CACHE_TAG_FILTER_OPTIONS] },
+);
 
 export async function getFilterOptions(): Promise<FilterOptions> {
   const [sectors, oracles, chains, bridges] = await Promise.all([
@@ -256,6 +274,13 @@ function buildWhereClause(filters: EntityFilters) {
   return combined;
 }
 
+export const getEntitiesCached = unstable_cache(
+  async (options: EntityListOptions): Promise<EntityListResult> =>
+    getEntities(options),
+  ["entities-v1"],
+  { revalidate: 30, tags: [CACHE_TAG_ENTITIES] },
+);
+
 export async function getEntities(
   options: EntityListOptions,
 ): Promise<EntityListResult> {
@@ -309,6 +334,13 @@ export async function getEntities(
     pageSize: safePageSize,
   };
 }
+
+export const getEntityByIdCached = unstable_cache(
+  async (entityId: string): Promise<EntityDetail | null> =>
+    getEntityById(entityId),
+  ["entity-by-id-v1"],
+  { revalidate: 60, tags: [CACHE_TAG_ENTITIES] },
+);
 
 export async function getEntityById(
   entityId: string,
@@ -486,6 +518,13 @@ function buildAlertWhere(opts: {
   return combined;
 }
 
+export const listAlertsCached = unstable_cache(
+  async (options: AlertListOptions): Promise<AlertListResult> =>
+    listAlerts(options),
+  ["list-alerts-v1"],
+  { revalidate: 30, tags: [CACHE_TAG_ALERTS] },
+);
+
 export async function listAlerts(
   options: AlertListOptions,
 ): Promise<AlertListResult> {
@@ -537,6 +576,12 @@ export async function listAlerts(
   };
 }
 
+export const getAlertByIdCached = unstable_cache(
+  async (alertId: string): Promise<AlertRow | null> => getAlertById(alertId),
+  ["alert-by-id-v1"],
+  { revalidate: 300, tags: [CACHE_TAG_ALERTS] },
+);
+
 export async function getAlertById(alertId: string): Promise<AlertRow | null> {
   const rows = await sql<AlertRow[]>`
     SELECT alert_id, detected_at,
@@ -553,6 +598,17 @@ export interface AffectedEntityRow extends EntityRow {
   defillama_slug: string | null;
   admin_address: string | null;
 }
+
+export const getAffectedEntitiesCached = unstable_cache(
+  async (
+    dependency_field: DependencyField,
+    dependency_key: string,
+    options: { limit?: number } = {},
+  ): Promise<AffectedEntityRow[]> =>
+    getAffectedEntities(dependency_field, dependency_key, options),
+  ["affected-entities-v1"],
+  { revalidate: 60, tags: [CACHE_TAG_ENTITIES, CACHE_TAG_ALERTS] },
+);
 
 export async function getAffectedEntities(
   dependency_field: DependencyField,
@@ -615,6 +671,17 @@ export interface SimilarExposureRow {
   overlap_score: number;
   overlap_members: string[];
 }
+
+export const getSimilarExposureCached = unstable_cache(
+  async (
+    dependency_field: DependencyField,
+    dependency_key: string,
+    options: { similarVia?: SimilarExposureField; limit?: number } = {},
+  ): Promise<SimilarExposureRow[]> =>
+    getSimilarExposure(dependency_field, dependency_key, options),
+  ["similar-exposure-v1"],
+  { revalidate: 300, tags: [CACHE_TAG_ENTITIES, CACHE_TAG_ALERTS] },
+);
 
 export async function getSimilarExposure(
   dependency_field: DependencyField,
