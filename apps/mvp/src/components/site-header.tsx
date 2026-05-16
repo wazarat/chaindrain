@@ -2,28 +2,35 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 interface SiteHeaderProps {
-  active: "dashboard" | "alerts";
-  legSubtitle?: string;
+  active: "dashboard" | "methodology" | "alerts";
 }
 
 const NAV: Array<{ id: SiteHeaderProps["active"]; label: string; href: string }> = [
   { id: "dashboard", label: "Risk dashboard", href: "/" },
   { id: "alerts", label: "Alerts", href: "/alerts" },
+  { id: "methodology", label: "Methodology", href: "/methodology" },
 ];
 
-export function SiteHeader({ active, legSubtitle }: SiteHeaderProps) {
+export function SiteHeader({ active }: SiteHeaderProps) {
   return (
     <header className="flex flex-col gap-3">
       <div className="flex flex-wrap items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="inline-flex items-center rounded-md bg-zinc-900 px-2 py-0.5 text-xs font-semibold uppercase tracking-wider text-white dark:bg-white dark:text-zinc-900">
-            Chaindrain
-          </span>
-          {legSubtitle ? (
-            <span className="text-xs uppercase tracking-wider text-zinc-500">
-              {legSubtitle}
+        <div className="flex items-baseline gap-3">
+          <Link
+            href="/"
+            className="inline-flex items-baseline text-2xl font-semibold tracking-tight"
+            aria-label="chaindrain home"
+          >
+            <span className="lowercase text-yellow-500 dark:text-yellow-400">
+              chain
             </span>
-          ) : null}
+            <span className="lowercase text-red-600 dark:text-red-500">
+              drain
+            </span>
+          </Link>
+          <span className="text-xs uppercase tracking-wider text-zinc-500">
+            MVP
+          </span>
         </div>
         <nav className="flex items-center gap-1 rounded-lg border border-zinc-200 bg-white p-1 text-sm shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
           {NAV.map((item) => {

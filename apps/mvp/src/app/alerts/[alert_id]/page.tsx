@@ -45,7 +45,7 @@ export default async function AlertDetailPage({ params }: PageProps) {
 
   return (
     <div className="mx-auto flex w-full max-w-[1400px] flex-col gap-6 px-4 py-6 sm:px-6 lg:px-8 lg:py-10">
-      <SiteHeader active="alerts" legSubtitle="FAN OUT leg · MVP" />
+      <SiteHeader active="alerts" />
 
       <AlertHeader alert={alert} />
 
@@ -65,7 +65,7 @@ export default async function AlertDetailPage({ params }: PageProps) {
         <span>
           Affected query:{" "}
           <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">
-            chaindrain.mvp_master
+            chaindrain.mvp_master_dedup
           </code>{" "}
           · similar exposure via{" "}
           <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">

@@ -146,7 +146,7 @@ export async function countIdentities(): Promise<number> {
 
 export const getKpiSummaryCached = unstable_cache(
   async (): Promise<KpiSummary> => getKpiSummary(),
-  ["kpi-summary-v1"],
+  ["kpi-summary-v2"],
   { revalidate: 30, tags: [CACHE_TAG_KPIS, CACHE_TAG_ALERTS] },
 );
 
@@ -167,7 +167,7 @@ export async function getKpiSummary(): Promise<KpiSummary> {
         COUNT(*) FILTER (WHERE risk_tier = 'high')::text                  AS high_count,
         COALESCE(SUM(tvl_usd), 0)::text                                   AS total_tvl_usd,
         COALESCE(SUM(blast_radius_usd), 0)::text                          AS total_blast_radius_usd
-      FROM chaindrain.mvp_master
+      FROM chaindrain.mvp_master_dedup
     `,
     sql<{ total: string; critical: string }[]>`
       SELECT
@@ -193,7 +193,7 @@ export async function getKpiSummary(): Promise<KpiSummary> {
 
 export const getFilterOptionsCached = unstable_cache(
   async (): Promise<FilterOptions> => getFilterOptions(),
-  ["filter-options-v1"],
+  ["filter-options-v2"],
   { revalidate: 3600, tags: [CACHE_TAG_FILTER_OPTIONS] },
 );
 
@@ -277,7 +277,7 @@ function buildWhereClause(filters: EntityFilters) {
 export const getEntitiesCached = unstable_cache(
   async (options: EntityListOptions): Promise<EntityListResult> =>
     getEntities(options),
-  ["entities-v1"],
+  ["entities-v2"],
   { revalidate: 30, tags: [CACHE_TAG_ENTITIES] },
 );
 
@@ -314,7 +314,7 @@ export async function getEntities(
       stablecoin_dependencies,
       chain_deployments,
       state
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     ${where}
     ${orderBy}
     LIMIT ${safePageSize}
@@ -323,7 +323,7 @@ export async function getEntities(
 
   const totalRows = await sql<{ count: string }[]>`
     SELECT COUNT(*)::text AS count
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     ${where}
   `;
 
@@ -338,7 +338,7 @@ export async function getEntities(
 export const getEntityByIdCached = unstable_cache(
   async (entityId: string): Promise<EntityDetail | null> =>
     getEntityById(entityId),
-  ["entity-by-id-v1"],
+  ["entity-by-id-v2"],
   { revalidate: 60, tags: [CACHE_TAG_ENTITIES] },
 );
 
@@ -347,7 +347,7 @@ export async function getEntityById(
 ): Promise<EntityDetail | null> {
   const rows = await sql<EntityDetail[]>`
     SELECT *
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     WHERE entity_id = ${entityId}
     LIMIT 1
   `;
@@ -401,14 +401,14 @@ export async function computeFanout(
     rows = await sql<{ count: string; tvl: string | null }[]>`
       SELECT COUNT(*)::text AS count,
              COALESCE(SUM(blast_radius_usd), 0)::text AS tvl
-      FROM chaindrain.mvp_master
+      FROM chaindrain.mvp_master_dedup
       WHERE ${sql(dependency_field)} && ARRAY[${dependency_key}]::text[]
     `;
   } else {
     rows = await sql<{ count: string; tvl: string | null }[]>`
       SELECT COUNT(*)::text AS count,
              COALESCE(SUM(blast_radius_usd), 0)::text AS tvl
-      FROM chaindrain.mvp_master
+      FROM chaindrain.mvp_master_dedup
       WHERE ${sql(dependency_field)} = ${dependency_key}
     `;
   }
@@ -431,7 +431,7 @@ export async function getTopAdminWatchEntities(
     }[]
   >`
     SELECT entity_id, name, admin_address, upgrade_authority_type
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     WHERE admin_address IS NOT NULL
       AND admin_address ~ '^0x[0-9a-fA-F]{40}$'
     ORDER BY risk_score DESC NULLS LAST
@@ -448,7 +448,7 @@ export async function getTopAdminWatchEntities(
 export async function getWatchedDefillamaSlugs(): Promise<string[]> {
   const rows = await sql<{ defillama_slug: string }[]>`
     SELECT DISTINCT defillama_slug
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     WHERE defillama_slug IS NOT NULL AND defillama_slug <> ''
   `;
   return rows.map((r) => r.defillama_slug);
@@ -606,7 +606,7 @@ export const getAffectedEntitiesCached = unstable_cache(
     options: { limit?: number } = {},
   ): Promise<AffectedEntityRow[]> =>
     getAffectedEntities(dependency_field, dependency_key, options),
-  ["affected-entities-v1"],
+  ["affected-entities-v2"],
   { revalidate: 60, tags: [CACHE_TAG_ENTITIES, CACHE_TAG_ALERTS] },
 );
 
@@ -623,7 +623,7 @@ export async function getAffectedEntities(
         blast_radius_usd, oracle_providers, bridge_dependencies,
         stablecoin_dependencies, chain_deployments, state,
         defillama_slug, admin_address
-      FROM chaindrain.mvp_master
+      FROM chaindrain.mvp_master_dedup
       WHERE ${sql(dependency_field)} && ARRAY[${dependency_key}]::text[]
       ORDER BY blast_radius_usd DESC NULLS LAST, risk_score DESC NULLS LAST, name ASC
       LIMIT ${limit}
@@ -635,7 +635,7 @@ export async function getAffectedEntities(
       blast_radius_usd, oracle_providers, bridge_dependencies,
       stablecoin_dependencies, chain_deployments, state,
       defillama_slug, admin_address
-    FROM chaindrain.mvp_master
+    FROM chaindrain.mvp_master_dedup
     WHERE ${sql(dependency_field)} = ${dependency_key}
     ORDER BY blast_radius_usd DESC NULLS LAST, risk_score DESC NULLS LAST, name ASC
     LIMIT ${limit}
@@ -679,7 +679,7 @@ export const getSimilarExposureCached = unstable_cache(
     options: { similarVia?: SimilarExposureField; limit?: number } = {},
   ): Promise<SimilarExposureRow[]> =>
     getSimilarExposure(dependency_field, dependency_key, options),
-  ["similar-exposure-v1"],
+  ["similar-exposure-v2"],
   { revalidate: 300, tags: [CACHE_TAG_ENTITIES, CACHE_TAG_ALERTS] },
 );
 
@@ -723,7 +723,7 @@ export async function getSimilarExposure(
   const rows = await sql<Row[]>`
     WITH affected AS (
       SELECT ${sql(similarVia)} AS via_arr
-      FROM chaindrain.mvp_master
+      FROM chaindrain.mvp_master_dedup
       WHERE ${affectedPredicate}
         AND ${sql(similarVia)} IS NOT NULL
     ),
@@ -754,7 +754,7 @@ export async function getSimilarExposure(
         FROM unnest(e.${sql(similarVia)}) m
         WHERE m IN (SELECT member FROM exposure)
       ) AS overlap_members
-    FROM chaindrain.mvp_master e
+    FROM chaindrain.mvp_master_dedup e
     WHERE ${notAffectedPredicate}
       AND e.${sql(similarVia)} && (SELECT members FROM exposure_arr)
       AND EXISTS (SELECT 1 FROM exposure)
