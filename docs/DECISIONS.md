@@ -342,3 +342,29 @@ The smoke run on the live DB confirmed the design: for a synthetic USDC depeg al
 **Next 16 deprecation gotcha:** `revalidateTag(tag)` 1-arg form is now a TypeScript error in Next 16; the second argument is a required `cacheLife` profile string. We use `"max"` for cron-driven invalidation since the intent is "throw away the entry, force a fresh fetch on the next read".
 
 **See:** `apps/mvp/src/lib/db/queries.ts` (`CACHE_TAG_*` constants + `*Cached` exports), `apps/mvp/src/app/api/cron/poll/route.ts` (invalidation site), `docs/CHANGELOG_DEV.md` 2026-05-16 PM #9 entry, skill `next-cache-components/SKILL.md` for the eventual `'use cache'` migration recipe.
+
+---
+
+## 26. Phase 5 digest: Vercel Cron for daily-only, raw uncached reads, skip-on-empty, `onboarding@resend.dev` default
+
+**Decision (2026-05-16, Phase 5):** Four sub-decisions for the daily digest, all in the same hotfix-sized commit:
+
+1. **Cron source split by cadence.** Daily digest (`0 9 * * *`) goes in `apps/mvp/vercel.json` and runs via Vercel Cron. The 5-min DETECT poll stays on GitHub Actions per DECISIONS §23. The `vercel.json` file is single-purpose (only the digest entry) and was *re-created* in this phase after being deleted in the Phase 3 hotfix that moved the poll cron off Vercel — its prior contents are not relevant.
+2. **Digest reads call the raw uncached `listAlerts` / `getAffectedEntities`** (NOT the `*Cached` siblings introduced in DECISIONS §25). The digest fires exactly once per day; using a cached read would risk surfacing a stale 24h window if the cache hadn't been invalidated between the last `revalidateTag` call (which happens on every alert-persisting poll tick) and the 09:00 UTC cron. Cron routes themselves are not subject to the page-render cache, so calling `listAlerts(...)` directly is correct here. (The earlier `/api/cron/poll` route uses `runPollers()` which doesn't cache for the same reason.)
+3. **Skip-on-empty with `?force=1` override.** If `listAlerts({ windowDays: 1, ... })` returns zero rows in the last 24 h, the route returns `{ ok: true, skipped: true, reason: "no_alerts", counts }` with HTTP 200 and **does NOT** call `resend.emails.send(...)`. Sending an empty digest every day is noise; the cron run still succeeds (so the Vercel dashboard doesn't mark it failing) but the inbox stays clean. The `?force=1` query string bypasses this gate so the operator can manually smoke-test the renderer + Resend integration on quiet days. Spec wording ("Daily digest email sent on schedule with non-empty content") matches: the "non-empty content" criterion is exactly what we're enforcing.
+4. **Default `RESEND_FROM=Chaindrain Alerts <onboarding@resend.dev>`** instead of `alerts@chaindrain.xyz`. Resend's `onboarding@resend.dev` is a no-DNS-setup test sender — works the moment `RESEND_API_KEY` is set, no domain verification needed. It does limit who can receive (Resend's free-tier policy with the test sender is "only verified emails on the same Resend account"), but the user's recipient `waz@canhav.com` is already on the canhav.com Resend account, so that's not a blocker for v1. Switching to `alerts@chaindrain.xyz` requires adding DMARC/SPF/DKIM records in the chaindrain.xyz DNS zone — that's a 5-minute Resend dashboard flow but unnecessary for the v0.1.0 ship gate. The `RESEND_FROM` env var override keeps the upgrade path one config change away.
+
+**Rationale (cross-cutting):**
+- **Cron source split**: Hobby allows daily crons but rejects sub-daily, and the 5-min poll path is already production-proven on GitHub Actions (DECISIONS §23). No reason to mix sources within the same project for the digest — Vercel Cron is the natural home for a daily job that runs against a Vercel route.
+- **Raw vs cached reads in cron paths**: cache invalidation latency is an inbound-request concern. Outbound jobs (cron, digest, webhooks) need fresh truth at the moment of trigger and don't benefit from caching since they run once per scheduled tick, not per request.
+- **Skip-on-empty**: chosen over "always send" because the spec's "non-empty content" criterion is explicit and an empty digest trains recipients to ignore the channel.
+- **`onboarding@resend.dev` default**: optimizes for v0.1.0 ship velocity over branding. The "Chaindrain Alerts" display name preserves the brand in mail clients even though the actual From address is generic.
+
+**Implementation seams worth knowing:**
+- `renderDigestEmail({ windowHours, generatedAt, buckets, appBaseUrl? })` is pure (no DB, no network) and is the only function with email-formatting logic. It returns `{ subject, html, text, counts }`. To change the email template (header, footer, severity ordering, link styling), edit `apps/mvp/src/lib/email/digest.ts` only — the route is a thin wrapper.
+- All dynamic strings in the HTML are HTML-escaped via `escapeHtml`/`escapeAttr` to defend against an attacker landing an entity name like `"><script>alert(1)</script>` in the seed data. There's a unit test for this exact payload.
+- `appBaseUrl` defaults to `https://www.chaindrain.xyz` but honors a `NEXT_PUBLIC_APP_BASE_URL` env override (also used by future preview-deploy smoke tests). Trailing slashes are normalized away to prevent `//alerts` URLs.
+
+**Future migration to `'use cache'` (Phase 6+)**: when the rest of the codebase migrates from `unstable_cache` to the Next 16 `'use cache'` directive (per DECISIONS §25), the digest route stays unchanged — it never used the `*Cached` variants in the first place.
+
+**See:** `apps/mvp/src/app/api/cron/digest/route.ts`, `apps/mvp/src/lib/email/digest.ts`, `apps/mvp/vercel.json`, `apps/mvp/.env.local.example`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM #10 entry, `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 5" section.

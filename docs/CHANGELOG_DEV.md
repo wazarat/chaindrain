@@ -10,6 +10,131 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #10) — Phase 5: daily digest via Resend, the MVP's last leg
+
+### Session goals
+Fresh chat opened to start Phase 5 (the last build phase before tagging v0.1.0). Read AI_CONTEXT + DECISIONS + CHANGELOG_DEV + the active plan + `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 5" before any code. Confirmed entry state: phases 0-4.1 all done and live in prod, working tree clean, last commit `7924ff1`, `chaindrain.alert` had 3 real cron-fired rows, `resend@^4.0.1` already in `apps/mvp/package.json` from Phase 1's prep, `CRON_SECRET` already in Vercel + GitHub repo secrets from Phase 3.
+
+Asked the user for the three Phase 5 blockers before writing any code:
+1. Resend API key handling — user has the key, will set in Vercel manually.
+2. Send-from address — `onboarding@resend.dev` (zero-DNS default) approved.
+3. Recipient list — `waz@canhav.com`.
+
+### Implementation
+Five files of net-new code + four files of docs.
+
+**`apps/mvp/src/lib/email/digest.ts`** — pure renderer module (I/O-free, no DB, no network). Exports:
+- `renderDigestEmail({ windowHours, generatedAt, buckets, appBaseUrl? }): RenderedDigest` returning `{ subject, html, text, counts }`.
+- `digestSubject(counts)` — formats the spec's verbatim subject string `Chaindrain Daily — N critical / M high alerts`.
+- `countBuckets(buckets)` — derives `{ critical, high, medium, low, total }` from the input.
+- Type exports: `DigestAlertEntry`, `DigestBuckets`, `DigestCounts`, `RenderedDigest`, `RenderDigestInput`.
+
+Per-alert layout (text + HTML mirror each other): 3 lines as spec requires — `(1) signal_type · dependency_key (field label)`, `(2) Fanout: N entities · blast radius $X`, `(3) Top affected: name ($X) | "no affected entities found"`. Critical alerts get a 4th "Top 5 by blast radius" expansion (bulleted list with name + compact-USD). Severity sections are rendered in `critical → high → medium → low` order with severity-colored chips (red/orange/yellow/emerald accent + matching background). Empty-window case renders a "No alerts in the last 24h" body. All dynamic strings HTML-escaped via local `escapeHtml`/`escapeAttr` helpers (defends against XSS-shaped entity names in the seed data; tested explicitly with `"><script>alert(1)</script>`).
+
+Reused existing formatters from `src/lib/utils.ts`: `signalTypeLabel`, `dependencyFieldLabel`, `formatUsdCompact`. New helper `formatTimestamp(date)` returns ISO-style `YYYY-MM-DD HH:MM UTC` strings (avoids locale-dependent rendering across machines).
+
+Initial draft used `@/lib/...` path aliases (matching the route file convention); tests immediately failed because vitest doesn't resolve the `@/` alias from tsconfig (we don't have `vite-tsconfig-paths` installed). Existing lib files (`pollers/*.ts`, `db/queries.ts`) all use relative imports for sibling `src/lib/*` deps — so switched `digest.ts` and `digest.test.ts` to relative imports to match the codebase convention. Convention: app/route files use `@/`; lib internals use relative.
+
+**`apps/mvp/src/lib/email/digest.test.ts`** — 11 vitest cases:
+1. `digestSubject` matches spec format with populated counts.
+2. `digestSubject` renders the zero-count case (`0 critical / 0 high`).
+3. Empty-window render returns the no-alerts subject + body without throwing.
+4. Subject is computed correctly with 1 critical + 1 high.
+5. Text body contains the canonical 3-line shape (literal-match against `"- Stablecoin depeg · USDC (Stablecoin)"`, `"  Fanout: 70 entities · blast radius $39.5B"`, `"  Top affected: Ether.fi Cash ($8.2B)"`).
+6. Top-5 expansion appears for critical alerts (includes #5 "Ondo — $1.8B", excludes #6 "Aave — $1.7B").
+7. Top-5 expansion does NOT appear for non-critical alerts (only-high bucket).
+8. HTML escapes `"><script>alert(1)</script>` shaped entity names (verifies the rendered HTML contains `&lt;script&gt;` and not the raw tag).
+9. Custom `appBaseUrl` is used in alert URLs + normalizes trailing slashes (no `//alerts` doubled-slash).
+10. Fanout label singularizes `1 entity` vs `N entities`.
+11. Critical alert with zero affected entities renders cleanly with the "no affected entities found" fallback.
+
+Test suite size: **40 tests across 6 files**, up from 29/5 at Phase 4.1 close.
+
+**`apps/mvp/src/app/api/cron/digest/route.ts`** — the cron route, mirrors `/api/cron/poll`'s auth + error shape exactly:
+- `runtime: "nodejs"`, `dynamic: "force-dynamic"`, `maxDuration: 60`.
+- Returns 500 `cron_secret_not_configured` if `CRON_SECRET` env unset (deploy-time bug, loud signal — same rationale as DECISIONS §22).
+- Returns 401 `unauthorized` on missing or wrong Bearer.
+- Returns 500 `digest_not_configured` with explicit `message: "RESEND_API_KEY is not set"` or `"DIGEST_RECIPIENTS is not set"` if either is missing.
+- Calls `listAlerts({ windowDays: 1, sortField: "severity", sortDirection: "asc", page: 1, pageSize: 200 })` — **raw uncached** (digest must see fresh truth at trigger time; DECISIONS §26).
+- For every alert in parallel via `Promise.all`, calls `getAffectedEntities(field, key, { limit: 5 })`. Each call is wrapped in try/catch — if one alert's affected-entities query fails, that alert renders with an empty `topAffected` array instead of taking down the whole digest.
+- Buckets alerts by severity into `{ critical, high, medium, low }`.
+- **Skip-on-empty:** if `counts.total === 0` and the URL does NOT have `?force=1`, returns `{ ok: true, skipped: true, reason: "no_alerts", window_hours, counts, elapsed_ms }` with HTTP 200 and does NOT call Resend. The cron run shows green in the Vercel dashboard, and the inbox stays clean on quiet days.
+- Calls `renderDigestEmail({ windowHours: 24, generatedAt, buckets, appBaseUrl: NEXT_PUBLIC_APP_BASE_URL || undefined })`.
+- Sends via `new Resend(apiKey).emails.send({ from, to: recipients, subject, html, text })`. `from` defaults to `Chaindrain Alerts <onboarding@resend.dev>` (Resend free-tier no-DNS sender) and honors `RESEND_FROM` env override for when chaindrain.xyz is verified in Resend.
+- If Resend returns `{ error }`, returns 502 `resend_send_failed` preserving the original `error.message` + `error.name`.
+- Success returns `{ ok: true, window_hours, counts, subject, recipients, message_id, from, elapsed_ms }`.
+- Exports `POST = GET` so the route accepts both methods (mirrors `/api/cron/poll` for manual `curl -X POST` parity).
+
+**`apps/mvp/vercel.json`** — re-created (was deleted in Phase 3's GitHub Actions migration per DECISIONS §23) with a single entry:
+```json
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "crons": [{ "path": "/api/cron/digest", "schedule": "0 9 * * *" }]
+}
+```
+Hobby plan allows daily crons (only sub-daily is rejected, which is why the 5-min poll lives on GitHub Actions). Vercel Cron automatically attaches `Authorization: Bearer ${CRON_SECRET}` to the request when `CRON_SECRET` is set as a Vercel env var, matching the manual `curl` smoke path.
+
+**`apps/mvp/.env.local.example`** — added a Phase 5 section with `RESEND_API_KEY`, `DIGEST_RECIPIENTS`, optional `RESEND_FROM`, optional `NEXT_PUBLIC_APP_BASE_URL`. Documented the Resend free-tier 100/day limit, the no-DNS `onboarding@resend.dev` default, and the upgrade path to `alerts@chaindrain.xyz`.
+
+### Local verification
+- `pnpm typecheck` — clean across 3 workspace projects (apps/mvp, apps/web, packages/shared-types).
+- `pnpm --filter @chaindrain/mvp lint` — clean.
+- `pnpm --filter @chaindrain/mvp test` — **40/40 passed in 415ms** (6 test files: stablecoin-depeg, oracle-deviation, bridge-pause, admin-tx, tvl-drop, email/digest).
+- `pnpm --filter @chaindrain/mvp build` — clean in 1.3s compile + 2.4s typecheck. Route table now shows `/api/cron/digest` as a dynamic server function alongside `/api/cron/poll`.
+- Started dev server on port 3010 (had to set `HOSTNAME=127.0.0.1` to work around a sandbox `uv_interface_addresses` error in `next dev`'s network-host probe; this is a sandbox-only quirk and doesn't affect Vercel runtime).
+- Smoke probes against `http://127.0.0.1:3010/api/cron/digest`:
+  - No auth header → `401 {"ok":false,"error":"unauthorized"}` ✓
+  - `Authorization: Bearer wrong` → `401 {"ok":false,"error":"unauthorized"}` ✓
+  - `Authorization: Bearer $CRON_SECRET` (with RESEND_API_KEY unset locally) → `500 {"ok":false,"error":"digest_not_configured","message":"RESEND_API_KEY is not set"}` ✓
+- Did NOT smoke the live Resend send locally — the local `.env.local` deliberately doesn't have a Resend key; full send path verified in prod after the user sets the Vercel env vars.
+
+### Production hand-off checklist (user actions before `v0.1.0` tag)
+1. Generate a Resend API key at https://resend.com/api-keys (or reuse the canhav.com account's existing key).
+2. In Vercel `chaindrain-mvp` → Settings → Environment Variables (Production), add:
+   - `RESEND_API_KEY=re_...`
+   - `DIGEST_RECIPIENTS=waz@canhav.com`
+   - Optional: `RESEND_FROM=Chaindrain Alerts <alerts@chaindrain.xyz>` (only after DNS verification in Resend dashboard).
+3. Redeploy the project.
+4. Manual smoke:
+   ```bash
+   curl -sS --max-time 30 -X POST \
+     -H "Authorization: Bearer $CRON_SECRET" \
+     "https://chaindrain-mvp.vercel.app/api/cron/digest?force=1" | jq .
+   ```
+   `?force=1` bypasses the skip-on-empty gate so you get a real email regardless of 24h alert count. Expect `{ ok: true, message_id, subject, counts, recipients, from, elapsed_ms }`. Confirm email lands in `waz@canhav.com`.
+5. Verify Vercel dashboard → Settings → Cron Jobs shows the `0 9 * * *` schedule registered with a next-run timestamp ≤ 24h away.
+6. Tag `v0.1.0` (using the standard `wazarat` author env trick) once the email lands and the cron is registered. The 6 done-criteria from CURSOR_PROMPT.md are then all green:
+   - [x] Dashboard <500ms, 875 entities, all filters (Phase 2 + 4.1 cache)
+   - [x] `/api/health` → `count: 875` (Phase 1)
+   - [x] 5 pollers run on cron (Phase 3 + GitHub Actions)
+   - [x] ≥1 real alert from live data (Liquity V2 / CEX.IO / +1 in `chaindrain.alert`)
+   - [x] Fanout query <200ms for any dependency_key (Phase 4 verified, GIN-backed)
+   - [ ] Daily digest sent on schedule with non-empty content (this hand-off step)
+
+### Files modified / created
+- **NEW** `apps/mvp/src/lib/email/digest.ts` — pure renderer.
+- **NEW** `apps/mvp/src/lib/email/digest.test.ts` — 11 vitest cases.
+- **NEW** `apps/mvp/src/app/api/cron/digest/route.ts` — cron route.
+- **NEW** `apps/mvp/vercel.json` — single daily cron entry.
+- **MOD** `apps/mvp/.env.local.example` — added RESEND_API_KEY / DIGEST_RECIPIENTS / RESEND_FROM / NEXT_PUBLIC_APP_BASE_URL.
+- **MOD** `docs/AI_CONTEXT.md` — top-line phase status flipped to Phase 5 DONE; repo layout updated for new files + `vercel.json`; §7 Phase 5 expanded with the full deliverables + handoff checklist; §8 retitled to "handoff to v0.1.0 tag".
+- **MOD** `docs/DECISIONS.md` — added §26 covering the four Phase 5 design choices (cron source split, raw uncached reads in cron, skip-on-empty + `?force=1` override, `onboarding@resend.dev` default).
+- **NEW** `docs/CHANGELOG_DEV.md` — this entry.
+
+### Out of scope (refused / deferred per spec)
+- Slack/Discord/webhook notifications — Phase 6.
+- Unsubscribe link in the digest — overkill for single-tenant.
+- Markdown→HTML library — 3-line bodies don't need it.
+- Per-recipient personalization (e.g. per-tenant filtering of alerts) — single-tenant in v1.
+- Resend webhook event ingestion (delivered / bounced / complained) — Phase 6 if email volume grows.
+- Charts in the digest body — spec says "stretch goal at most"; declined.
+- Additional pollers beyond the Phase 3 five — capped per spec.
+
+### Next steps after the v0.1.0 tag
+- Once tagged, the MVP is feature-complete. Phase 6 (post-MVP) candidates from CURSOR_PROMPT.md: alert dedup, alert acknowledge/triage UI, Slack/Discord notifications, Forta/incident-ledger ingestion, historical alert replay, LLM-based reasoning over alerts, multi-tenant + auth, decommission the legacy `apps/web` Vercel project. None of these are commitments — they're the backlog if/when the user wants to keep building.
+
+---
+
 ## 2026-05-16 (PM #9) — Phase 4.1 hotfix: cache the read-side queries so `/` stops 500-ing under serverless connection-pool starvation
 
 ### Session goals
