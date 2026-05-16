@@ -205,3 +205,26 @@ The previously-pushed Phase 0 commit (`4686d09`) already had the trailer; it was
 **Rationale:** `pnpm dlx create-next-app@latest` ships 16 as the default. The plan was written before Next 16 GA. App Router semantics are unchanged between 15 and 16; nothing in the MVP scope spec depends on a 15-specific API. Pinning to 16 avoids the legacy `apps/web`'s problem (it was on `15.0.0-rc.0` which had unsupported flags like `--turbopack` — see DECISIONS §6) and keeps us on a long-term-supported major. If anything in Phases 2–5 hits a 16-only regression, we'll downgrade per-phase.
 
 **See:** `apps/mvp/package.json`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM entry.
+
+---
+
+## 18. Pin pnpm `store-dir` to `~/Library/pnpm/store` via root `.npmrc`
+
+**Decision (2026-05-16, Phase 1):** The repo's `.npmrc` sets `store-dir=~/Library/pnpm/store` (the macOS-default global pnpm store). It also sets `auto-install-peers=true` and `strict-peer-dependencies=false`.
+
+**Rationale:** When pnpm is invoked from inside the Cursor sandbox (default `network: limited`, FS write-restricted to the workspace), it cannot write to `~/Library/pnpm/store` and silently falls back to a per-repo `.pnpm-store/v3`. That fallback worked once, then was poisoned by a different (later) agent run that wrote `.claude/settings.local.json` files into extracted package directories like `node_modules/.pnpm/nanoid@3.3.12/node_modules/nanoid/.claude/`. macOS Gatekeeper stamped those files with the `com.apple.provenance` extended attribute. From that point on, every `pnpm install` invocation tries to `copyfile()` those poisoned files out of the in-repo store, gets `EPERM` from TCC, retries indefinitely, and **hangs the entire install with no progress output**. We hit the hang in the prior chat (>7 min) and again at the start of this one. Symptom is identical: install resolves packages, starts copying, then blocks on the first `.claude/`-bearing package.
+
+Pinning `store-dir` to the global path forces pnpm to use the un-poisoned macOS store regardless of sandbox mode. The trade-off is `pnpm install` will fail inside a write-restricted sandbox if the global store needs new packages — that's handled by running install commands with `required_permissions: ["all"]` in agent runs.
+
+**Companion fixes applied at the same time (one-time cleanup, not part of the policy):**
+- Deleted the poisoned `.pnpm-store/` and the orphan `apps/web/node_modules/` (full of symlinks pointing at a `node_modules/.pnpm/` tree that didn't exist on disk).
+- Cleared `com.apple.provenance` xattrs from `node_modules/` via `xattr -rd com.apple.provenance node_modules` before re-running `rm -rf`. Future agents who hit the same error should run that command first.
+
+**Diagnostic recipe (paste into a fresh chat if `pnpm install` ever hangs again):**
+```bash
+pnpm store path                         # confirm it points to ~/Library/pnpm/store, NOT .pnpm-store/
+ls -la .pnpm-store 2>/dev/null          # if it exists, the .npmrc isn't being honored
+xattr -l node_modules/**/.claude/settings.local.json 2>/dev/null | head   # look for com.apple.provenance
+```
+
+**See:** `.npmrc`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM #3 entry.

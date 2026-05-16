@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — Phase 1 partial (scaffold dropped in `apps/mvp`; deps NOT yet installed). Next chat picks up here.
+**Last updated:** 2026-05-16 — Phase 1 done locally (`apps/mvp` installed, Drizzle introspected, `/api/health` → `{ ok: true, count: 875 }`). Pending: Vercel project + prod smoke test.
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -46,11 +46,15 @@ Single-tenant, IP-allowlisted on Vercel. **No auth in v1.**
 chaindrain/
 ├── apps/
 │   ├── web/        # legacy Next.js 15.0.0-rc.0 — frozen, will be removed in a Phase 6 cleanup
-│   └── mvp/        # NEW (Phase 1 in progress) — Next.js 16 scaffold dropped, deps NOT yet installed
+│   └── mvp/        # Phase 1 — Next.js 16.2.6, installed, /api/health green locally
 │       ├── src/app/{layout,page}.tsx, globals.css, favicon.ico   ← scaffold defaults
-│       ├── package.json     ← rewritten to @chaindrain/mvp with all needed deps listed
+│       ├── src/app/api/health/route.ts   ← Phase 1 — Drizzle count, returns { ok: true, count }
+│       ├── src/lib/supabase/{server,client}.ts   ← service-role + anon clients on `chaindrain` schema
+│       ├── src/lib/db/{index,queries,schema,relations}.ts + meta/   ← Drizzle pg client + introspect output
+│       ├── drizzle.config.ts   ← schemaFilter ['chaindrain'], uses DATABASE_URL_SESSION
+│       ├── .env.local (gitignored) + .env.local.example
+│       ├── package.json     ← @chaindrain/mvp; drizzle-orm ^0.45.2, drizzle-kit ^0.31.10 (bumped from plan's 0.36/0.30)
 │       ├── tsconfig.json, next.config.ts, eslint.config.mjs, postcss.config.mjs
-│       ├── README.md, AGENTS.md, CLAUDE.md   ← scaffold defaults (safe to delete)
 │       └── public/
 ├── packages/shared-types/  # legacy TS types, kept until apps/web is removed
 ├── supabase/migrations/
@@ -65,6 +69,8 @@ chaindrain/
 │   └── rls_audit.sql        ← legacy reference, no live use
 ├── docs/                    ← AI_CONTEXT, CHANGELOG_DEV, DECISIONS (this file)
 ├── pnpm-workspace.yaml      ← packages: apps/web, apps/mvp, packages/*
+├── pnpm-lock.yaml           ← regenerated 2026-05-16 in Phase 1
+├── .npmrc                   ← Phase 1 — pins `store-dir=~/Library/pnpm/store` to avoid an in-repo `.pnpm-store/` re-poisoning bug (see CHANGELOG 2026-05-16 PM #3)
 ├── .env.example             ← rewritten 2026-05-16 for the new stack
 ├── .git/hooks/commit-msg    ← strips Cursor co-author trailer (DO NOT REMOVE)
 └── ~/Downloads/chaindrain_export/   ← OUTSIDE the repo: source of truth for the dataset
@@ -152,27 +158,26 @@ Idempotent — `TRUNCATE chaindrain.identity RESTART IDENTITY CASCADE` first. Ru
 - 875 entities loaded via `scripts/load_seed.mjs` (the bundled `02_seed.sql` is broken — see DECISIONS §15).
 - `commit-msg` hook installed to strip Cursor co-author trailer. **Force-pushed clean Phase 0.**
 
-### Phase 1 — IN PROGRESS (uncommitted)
-**Done:**
-- `apps/mvp/` scaffolded via `pnpm dlx create-next-app@latest` with flags `--typescript --tailwind --app --eslint --src-dir --import-alias "@/*" --no-turbopack --use-pnpm`.
-- `apps/mvp/package.json` rewritten as `@chaindrain/mvp` with all target deps listed (NOT yet installed):
-  - deps: `@supabase/supabase-js ^2.45.4`, `drizzle-orm ^0.36.4`, `next 16.2.6`, `postgres ^3.4.9`, `react 19.2.4`, `react-dom 19.2.4`, `resend ^4.0.1`, `zod ^3.23.8`
-  - dev: `@tailwindcss/postcss ^4`, `@types/{node,react,react-dom}`, `drizzle-kit ^0.30.1`, `eslint ^9`, `eslint-config-next 16.2.6`, `tailwindcss ^4`, `tsx ^4.19.2`, `typescript ^5`
-- `pnpm-workspace.yaml` updated to include `apps/mvp`.
+### Phase 1 — DONE LOCALLY ✓ (commit pending; Vercel manual step + prod smoke test outstanding)
+**Steps 1–9 complete (local):**
+1. `pnpm install` ran from repo root in 6.5s after clearing the polluted in-repo `.pnpm-store/` (see §8 + DECISIONS §18). 401 packages, 542 resolved.
+2. `apps/mvp/src/lib/supabase/server.ts` — service-role client, `{ db: { schema: 'chaindrain' } }`, throws clean errors if `SUPABASE_SERVICE_ROLE_KEY` missing.
+3. `apps/mvp/src/lib/supabase/client.ts` — anon browser client, same schema.
+4. `apps/mvp/drizzle.config.ts` — `schemaFilter: ['chaindrain']`, output `src/lib/db/`, reads `DATABASE_URL_SESSION` (5432 session-mode pooler).
+5. `pnpm db:introspect` succeeded: 4 tables, 60 cols, 17 indexes, 3 FKs, 1 view → `src/lib/db/schema.ts` + `relations.ts` + `0000_magical_the_hunter.sql` + `meta/`.
+6. `apps/mvp/src/lib/db/queries.ts` stub: `countIdentities()` only (Phase 2 fills in the rest). Also added `src/lib/db/index.ts` — singleton `postgres` client (`prepare: false`, `max: 5`) + Drizzle wrapper.
+7. `apps/mvp/src/app/api/health/route.ts` — `runtime: nodejs`, `dynamic: force-dynamic`, returns `{ ok: true, count }` or `{ ok: false, error }` on failure.
+8. `.env.local` (gitignored) + `.env.local.example` (committed). `SUPABASE_SERVICE_ROLE_KEY` left blank — `/api/health` uses Drizzle/postgres over `DATABASE_URL` (postgres-superuser via pooler), no service-role needed.
+9. Local smoke test ✓ — `pnpm dev` on port 3010 → `curl http://localhost:3010/api/health` → `{"ok":true,"count":875}` in 2.7s. `pnpm typecheck` clean. Scaffold defaults (`AGENTS.md`, `CLAUDE.md`, `README.md`) deleted.
 
-**NOT done (next chat picks up here):**
-1. **Install deps** — `pnpm install --filter @chaindrain/mvp` previously stalled (>7 min, no output). May be a network issue; try `pnpm install` (no filter) from repo root, or run unsandboxed (`required_permissions: ["all"]`).
-2. **Write `apps/mvp/src/lib/supabase/server.ts`** — service-role client with `{ db: { schema: 'chaindrain' } }`. Pull `SUPABASE_URL` + `SUPABASE_SERVICE_ROLE_KEY` from env.
-3. **Write `apps/mvp/src/lib/supabase/client.ts`** — browser anon client, same schema.
-4. **Write `apps/mvp/drizzle.config.ts`** — `schemaFilter: ['chaindrain']`, output `src/lib/db/`, use `DATABASE_URL_SESSION` (port 5432, NOT 6543 — drizzle-kit needs session mode).
-5. **Run `pnpm --filter @chaindrain/mvp db:introspect`** to generate `src/lib/db/schema.ts`. Sanity-check the output then commit it.
-6. **Stub `apps/mvp/src/lib/db/queries.ts`** (Phase 2 fills in actual queries).
-7. **Write `apps/mvp/src/app/api/health/route.ts`** — `SELECT count(*) FROM chaindrain.identity` via `postgres` client, return `{ ok: true, count: 875 }`.
-8. **Write `apps/mvp/.env.local`** (gitignored) and `apps/mvp/.env.local.example` (committed). Vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY` (rotate before pasting), `DATABASE_URL`, `DATABASE_URL_SESSION`.
-9. **Local smoke test** — `pnpm --filter @chaindrain/mvp dev`, then `curl http://localhost:3000/api/health` should return `{"ok":true,"count":875}`.
-10. **Vercel project** — manual: create `chaindrain-mvp` Vercel project, Root Directory `apps/mvp`, "Include source files outside Root Directory" ON, set 4 env vars (no `NEXT_PUBLIC_API_BASE_URL` — it's gone).
+**Two non-spec bumps vs the plan, both forced:**
+- `drizzle-orm` `^0.36.4` → `^0.45.2` and `drizzle-kit` `^0.30.1` → `^0.31.10`. The 0.30.x drizzle-kit imports `drizzle-orm/gel-core`, a subpath only exported from `drizzle-orm` >= 0.37. Latest pair installed via `pnpm add … @latest`.
+- A repo-root `.npmrc` was added pinning `store-dir=~/Library/pnpm/store` + `auto-install-peers=true` + `strict-peer-dependencies=false`. Without `store-dir`, pnpm falls back to an in-repo `.pnpm-store/v3` when the sandbox blocks writes to the default global store, which is where the original `pnpm install` hang came from.
+
+**Pending (next):**
+10. **Vercel project** — *manual user step*: create `chaindrain-mvp` Vercel project, Root Directory `apps/mvp`, "Include source files outside Root Directory" ON, set 4 env vars (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `DATABASE_URL`, `DATABASE_URL_SESSION` — no `SUPABASE_SERVICE_ROLE_KEY` yet, no `NEXT_PUBLIC_API_BASE_URL`).
 11. **Production smoke test** — `curl https://chaindrain-mvp.vercel.app/api/health` → `count: 875`.
-12. **Commit + push** with subject `phase 1: apps/mvp scaffolded, drizzle introspected, /api/health → 875`.
+12. **Commit + push** with subject `phase 1: apps/mvp deps + drizzle introspect + /api/health → 875` (commit first so Vercel has code to deploy from; prod smoke test happens after the user wires up step 10).
 
 ### Phase 2 — SCORE leg (the dashboard at `/`)
 Per [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "PHASE 2". KPI cards (4) + filter bar (sector/risk_tier/coverage_tier/oracle/chain/bridge) + sortable HTML table over `mvp_master` (50/page, default `risk_score DESC NULLS LAST`) + Radix `<Dialog>` row-click drawer. Routes: `GET /api/entities` (paginated, zod-validated), `GET /api/entities/[entity_id]`. **All SQL through `src/lib/db/queries.ts`** — no inline SQL in route handlers. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
@@ -190,22 +195,15 @@ New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uu
 
 ## 8. Where the chat paused (handoff)
 
-**Phase 1 step 1 (`pnpm install`) stalled** at >7 minutes with no output, no `node_modules` created in `apps/mvp/`. Killed the process.
+**Phase 1 steps 1–9 complete locally; commit + push pending; steps 10–11 (Vercel) pending user action.**
 
-**Working tree at handoff:**
-```
- M pnpm-workspace.yaml
-?? .cursor/                  ← editor settings, do NOT commit
-?? apps/mvp/                 ← scaffold + rewritten package.json (uncommitted)
-```
-`scripts/`, `docs/`, supabase migrations, and the `.git/hooks/commit-msg` hook were all already pushed in Phase 0 (`fa7e795`).
+**Why the prior session's `pnpm install` stalled at >7 min:** the repo had an in-repo `.pnpm-store/v3` left over from a previous sandboxed run. That store contained `.claude/settings.local.json` files inside extracted packages (artifacts of a previous agent that wrote settings into package dirs). Those files carry the macOS `com.apple.provenance` extended attribute, which TCC uses to refuse `copyfile` operations. `pnpm install` repeatedly tries to copy packages out of the local store into `node_modules`, gets `EPERM` on every retry, and never makes progress. **Fix that's in the repo now:** root `.npmrc` pins `store-dir=~/Library/pnpm/store`, so pnpm uses the global macOS store path (`~/Library/pnpm/store/v10`) which has no provenance pollution. The bad `.pnpm-store/` directory and the dangling `apps/web/node_modules/` symlinks were both deleted as part of Phase 1. See DECISIONS §18.
 
-**To resume:** start a fresh terminal and run `pnpm install` from the repo root with full network permissions. If it stalls again, common fixes: `pnpm store prune`, switch registries with `pnpm install --registry=https://registry.npmjs.org/`, or fall back to `npm install` inside `apps/mvp/` directly (the workspace is forgiving of a non-pnpm install in one app). Then proceed through steps 2–12 in §7 Phase 1.
+**To resume:** commit + push Phase 1 (see step 12 in §7), then have the user create the `chaindrain-mvp` Vercel project (step 10), then `curl https://chaindrain-mvp.vercel.app/api/health` for prod smoke (step 11). After prod is green, move to Phase 2.
 
-**Then commit + push** Phase 1 with the standard env-var trick:
+**Commit using the standard env-var trick** so the hook strips the Cursor trailer:
 ```bash
 GIT_AUTHOR_EMAIL=wazarat@outlook.com GIT_AUTHOR_NAME=wazarat \
 GIT_COMMITTER_EMAIL=wazarat@outlook.com GIT_COMMITTER_NAME=wazarat \
 git commit -m "phase 1: ..."
 ```
-The hook will auto-strip the Cursor trailer.

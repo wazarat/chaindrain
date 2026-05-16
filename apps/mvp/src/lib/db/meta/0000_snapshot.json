@@ -1,0 +1,1128 @@
+{
+  "id": "00000000-0000-0000-0000-000000000000",
+  "prevId": "",
+  "version": "7",
+  "dialect": "postgresql",
+  "tables": {
+    "chaindrain.tier_state": {
+      "name": "tier_state",
+      "schema": "chaindrain",
+      "columns": {
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "risk_score": {
+          "name": "risk_score",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "risk_tier": {
+          "name": "risk_tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "coverage_tier": {
+          "name": "coverage_tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "tvl_factor": {
+          "name": "tvl_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mutability_factor": {
+          "name": "mutability_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_factor": {
+          "name": "audit_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bounty_factor": {
+          "name": "bounty_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blast_radius_usd": {
+          "name": "blast_radius_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "'active'"
+        },
+        "last_state_change": {
+          "name": "last_state_change",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        },
+        "computed_at": {
+          "name": "computed_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_ts_coverage": {
+          "name": "idx_ts_coverage",
+          "columns": [
+            {
+              "expression": "coverage_tier",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ts_risk_score": {
+          "name": "idx_ts_risk_score",
+          "columns": [
+            {
+              "expression": "risk_score",
+              "asc": false,
+              "nulls": "first",
+              "opclass": "numeric_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ts_risk_tier": {
+          "name": "idx_ts_risk_tier",
+          "columns": [
+            {
+              "expression": "risk_tier",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_ts_state": {
+          "name": "idx_ts_state",
+          "columns": [
+            {
+              "expression": "state",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "tier_state_entity_id_fkey": {
+          "name": "tier_state_entity_id_fkey",
+          "tableFrom": "tier_state",
+          "tableTo": "identity",
+          "schemaTo": "chaindrain",
+          "columnsFrom": [
+            "entity_id"
+          ],
+          "columnsTo": [
+            "entity_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "chaindrain.dependency_fingerprint": {
+      "name": "dependency_fingerprint",
+      "schema": "chaindrain",
+      "columns": {
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "oracle_providers": {
+          "name": "oracle_providers",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "oracle_confidence": {
+          "name": "oracle_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bridge_dependencies": {
+          "name": "bridge_dependencies",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bridge_confidence": {
+          "name": "bridge_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stablecoin_dependencies": {
+          "name": "stablecoin_dependencies",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stablecoin_confidence": {
+          "name": "stablecoin_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dvn_configuration": {
+          "name": "dvn_configuration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dvn_confidence": {
+          "name": "dvn_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dependency_sources": {
+          "name": "dependency_sources",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_dep_bridges": {
+          "name": "idx_dep_bridges",
+          "columns": [
+            {
+              "expression": "bridge_dependencies",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "array_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "idx_dep_dvn": {
+          "name": "idx_dep_dvn",
+          "columns": [
+            {
+              "expression": "dvn_configuration",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_dep_oracles": {
+          "name": "idx_dep_oracles",
+          "columns": [
+            {
+              "expression": "oracle_providers",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "array_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "idx_dep_stables": {
+          "name": "idx_dep_stables",
+          "columns": [
+            {
+              "expression": "stablecoin_dependencies",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "array_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "dependency_fingerprint_entity_id_fkey": {
+          "name": "dependency_fingerprint_entity_id_fkey",
+          "tableFrom": "dependency_fingerprint",
+          "tableTo": "identity",
+          "schemaTo": "chaindrain",
+          "columnsFrom": [
+            "entity_id"
+          ],
+          "columnsTo": [
+            "entity_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "chaindrain.contract_fingerprint": {
+      "name": "contract_fingerprint",
+      "schema": "chaindrain",
+      "columns": {
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "primary_contract_address": {
+          "name": "primary_contract_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "implementation_address": {
+          "name": "implementation_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "proxy_pattern": {
+          "name": "proxy_pattern",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "upgrade_authority_type": {
+          "name": "upgrade_authority_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "admin_address": {
+          "name": "admin_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "multisig_threshold": {
+          "name": "multisig_threshold",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "timelock_delay_hours": {
+          "name": "timelock_delay_hours",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "compiler_version": {
+          "name": "compiler_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verified_source": {
+          "name": "verified_source",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "uses_assembly": {
+          "name": "uses_assembly",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_call_count": {
+          "name": "external_call_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audits_tier": {
+          "name": "audits_tier",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_firms": {
+          "name": "audit_firms",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_audit_date": {
+          "name": "last_audit_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_links": {
+          "name": "audit_links",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_program": {
+          "name": "bug_bounty_program",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_max_payout_usd": {
+          "name": "bug_bounty_max_payout_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_immunefi_url": {
+          "name": "bug_bounty_immunefi_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_launch_date": {
+          "name": "bug_bounty_launch_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_updated_date": {
+          "name": "bug_bounty_updated_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_kyc_required": {
+          "name": "bug_bounty_kyc_required",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_cf_admin_addr": {
+          "name": "idx_cf_admin_addr",
+          "columns": [
+            {
+              "expression": "admin_address",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cf_audits_tier": {
+          "name": "idx_cf_audits_tier",
+          "columns": [
+            {
+              "expression": "audits_tier",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "int4_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cf_contract": {
+          "name": "idx_cf_contract",
+          "columns": [
+            {
+              "expression": "primary_contract_address",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cf_proxy": {
+          "name": "idx_cf_proxy",
+          "columns": [
+            {
+              "expression": "proxy_pattern",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_cf_upgrade_auth": {
+          "name": "idx_cf_upgrade_auth",
+          "columns": [
+            {
+              "expression": "upgrade_authority_type",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {
+        "contract_fingerprint_entity_id_fkey": {
+          "name": "contract_fingerprint_entity_id_fkey",
+          "tableFrom": "contract_fingerprint",
+          "tableTo": "identity",
+          "schemaTo": "chaindrain",
+          "columnsFrom": [
+            "entity_id"
+          ],
+          "columnsTo": [
+            "entity_id"
+          ],
+          "onDelete": "cascade",
+          "onUpdate": "no action"
+        }
+      },
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    },
+    "chaindrain.identity": {
+      "name": "identity",
+      "schema": "chaindrain",
+      "columns": {
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": true,
+          "notNull": true
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": true
+        },
+        "website": {
+          "name": "website",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sector": {
+          "name": "sector",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chain_deployments": {
+          "name": "chain_deployments",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tvl_usd": {
+          "name": "tvl_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "launch_date": {
+          "name": "launch_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_immutable": {
+          "name": "is_immutable",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_permissionless": {
+          "name": "is_permissionless",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "defillama_slug": {
+          "name": "defillama_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coingecko_id": {
+          "name": "coingecko_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "match_source": {
+          "name": "match_source",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "match_method": {
+          "name": "match_method",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "created_at": {
+          "name": "created_at",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false,
+          "default": "now()"
+        }
+      },
+      "indexes": {
+        "idx_identity_chains": {
+          "name": "idx_identity_chains",
+          "columns": [
+            {
+              "expression": "chain_deployments",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "array_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "gin",
+          "with": {}
+        },
+        "idx_identity_sector": {
+          "name": "idx_identity_sector",
+          "columns": [
+            {
+              "expression": "sector",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_identity_slug": {
+          "name": "idx_identity_slug",
+          "columns": [
+            {
+              "expression": "defillama_slug",
+              "asc": true,
+              "nulls": "last",
+              "opclass": "text_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "idx_identity_tvl": {
+          "name": "idx_identity_tvl",
+          "columns": [
+            {
+              "expression": "tvl_usd",
+              "asc": false,
+              "nulls": "last",
+              "opclass": "numeric_ops",
+              "isExpression": false
+            }
+          ],
+          "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        }
+      },
+      "foreignKeys": {},
+      "compositePrimaryKeys": {},
+      "uniqueConstraints": {},
+      "checkConstraints": {},
+      "policies": {},
+      "isRLSEnabled": false
+    }
+  },
+  "enums": {},
+  "schemas": {
+    "chaindrain": "chaindrain"
+  },
+  "sequences": {},
+  "roles": {},
+  "policies": {},
+  "views": {
+    "chaindrain.mvp_master": {
+      "name": "mvp_master",
+      "schema": "chaindrain",
+      "columns": {
+        "entity_id": {
+          "name": "entity_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "name": {
+          "name": "name",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "website": {
+          "name": "website",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "sector": {
+          "name": "sector",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "chain_deployments": {
+          "name": "chain_deployments",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tvl_usd": {
+          "name": "tvl_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "launch_date": {
+          "name": "launch_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_immutable": {
+          "name": "is_immutable",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "is_permissionless": {
+          "name": "is_permissionless",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "defillama_slug": {
+          "name": "defillama_slug",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coingecko_id": {
+          "name": "coingecko_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "primary_contract_address": {
+          "name": "primary_contract_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "implementation_address": {
+          "name": "implementation_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "proxy_pattern": {
+          "name": "proxy_pattern",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "upgrade_authority_type": {
+          "name": "upgrade_authority_type",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "admin_address": {
+          "name": "admin_address",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "multisig_threshold": {
+          "name": "multisig_threshold",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "timelock_delay_hours": {
+          "name": "timelock_delay_hours",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "compiler_version": {
+          "name": "compiler_version",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "verified_source": {
+          "name": "verified_source",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "uses_assembly": {
+          "name": "uses_assembly",
+          "type": "boolean",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "external_call_count": {
+          "name": "external_call_count",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audits_tier": {
+          "name": "audits_tier",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_firms": {
+          "name": "audit_firms",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_audit_date": {
+          "name": "last_audit_date",
+          "type": "date",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_links": {
+          "name": "audit_links",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_program": {
+          "name": "bug_bounty_program",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_max_payout_usd": {
+          "name": "bug_bounty_max_payout_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bug_bounty_immunefi_url": {
+          "name": "bug_bounty_immunefi_url",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "oracle_providers": {
+          "name": "oracle_providers",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "oracle_confidence": {
+          "name": "oracle_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bridge_dependencies": {
+          "name": "bridge_dependencies",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bridge_confidence": {
+          "name": "bridge_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stablecoin_dependencies": {
+          "name": "stablecoin_dependencies",
+          "type": "text[]",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "stablecoin_confidence": {
+          "name": "stablecoin_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dvn_configuration": {
+          "name": "dvn_configuration",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dvn_confidence": {
+          "name": "dvn_confidence",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "dependency_sources": {
+          "name": "dependency_sources",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "risk_score": {
+          "name": "risk_score",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "risk_tier": {
+          "name": "risk_tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "coverage_tier": {
+          "name": "coverage_tier",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "tvl_factor": {
+          "name": "tvl_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "mutability_factor": {
+          "name": "mutability_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "audit_factor": {
+          "name": "audit_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "bounty_factor": {
+          "name": "bounty_factor",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "blast_radius_usd": {
+          "name": "blast_radius_usd",
+          "type": "numeric",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "state": {
+          "name": "state",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "last_state_change": {
+          "name": "last_state_change",
+          "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        }
+      },
+      "isExisting": false,
+      "definition": "SELECT i.entity_id, i.name, i.website, i.sector, i.chain_deployments, i.tvl_usd, i.launch_date, i.is_immutable, i.is_permissionless, i.defillama_slug, i.coingecko_id, cf.primary_contract_address, cf.implementation_address, cf.proxy_pattern, cf.upgrade_authority_type, cf.admin_address, cf.multisig_threshold, cf.timelock_delay_hours, cf.compiler_version, cf.verified_source, cf.uses_assembly, cf.external_call_count, cf.audits_tier, cf.audit_firms, cf.last_audit_date, cf.audit_links, cf.bug_bounty_program, cf.bug_bounty_max_payout_usd, cf.bug_bounty_immunefi_url, df.oracle_providers, df.oracle_confidence, df.bridge_dependencies, df.bridge_confidence, df.stablecoin_dependencies, df.stablecoin_confidence, df.dvn_configuration, df.dvn_confidence, df.dependency_sources, ts.risk_score, ts.risk_tier, ts.coverage_tier, ts.tvl_factor, ts.mutability_factor, ts.audit_factor, ts.bounty_factor, ts.blast_radius_usd, ts.state, ts.last_state_change FROM chaindrain.identity i LEFT JOIN chaindrain.contract_fingerprint cf USING (entity_id) LEFT JOIN chaindrain.dependency_fingerprint df USING (entity_id) LEFT JOIN chaindrain.tier_state ts USING (entity_id)",
+      "materialized": false
+    }
+  },
+  "_meta": {
+    "schemas": {},
+    "tables": {},
+    "columns": {}
+  },
+  "internal": {
+    "tables": {
+      "dependency_fingerprint": {
+        "columns": {
+          "oracle_providers": {
+            "isArray": true,
+            "dimensions": 1,
+            "rawType": "text"
+          },
+          "bridge_dependencies": {
+            "isArray": true,
+            "dimensions": 1,
+            "rawType": "text"
+          },
+          "stablecoin_dependencies": {
+            "isArray": true,
+            "dimensions": 1,
+            "rawType": "text"
+          }
+        }
+      },
+      "contract_fingerprint": {
+        "columns": {
+          "audit_firms": {
+            "isArray": true,
+            "dimensions": 1,
+            "rawType": "text"
+          }
+        }
+      },
+      "identity": {
+        "columns": {
+          "chain_deployments": {
+            "isArray": true,
+            "dimensions": 1,
+            "rawType": "text"
+          }
+        }
+      },
+      "mvp_master": {
+        "columns": {
+          "chain_deployments": {
+            "isArray": true,
+            "dimensions": 0,
+            "rawType": "text"
+          },
+          "audit_firms": {
+            "isArray": true,
+            "dimensions": 0,
+            "rawType": "text"
+          },
+          "oracle_providers": {
+            "isArray": true,
+            "dimensions": 0,
+            "rawType": "text"
+          },
+          "bridge_dependencies": {
+            "isArray": true,
+            "dimensions": 0,
+            "rawType": "text"
+          },
+          "stablecoin_dependencies": {
+            "isArray": true,
+            "dimensions": 0,
+            "rawType": "text"
+          }
+        }
+      }
+    }
+  }
+}

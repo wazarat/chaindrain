@@ -1,0 +1,29 @@
+import { drizzle } from "drizzle-orm/postgres-js";
+import postgres from "postgres";
+import * as schema from "./schema";
+
+const url = process.env.DATABASE_URL;
+
+declare global {
+  // eslint-disable-next-line no-var
+  var __chaindrainPg: ReturnType<typeof postgres> | undefined;
+}
+
+function getPg() {
+  if (!url) {
+    throw new Error(
+      "DATABASE_URL is not set (use the transaction-mode pooler URL on port 6543)",
+    );
+  }
+  if (!global.__chaindrainPg) {
+    global.__chaindrainPg = postgres(url, {
+      prepare: false,
+      max: 5,
+      idle_timeout: 20,
+    });
+  }
+  return global.__chaindrainPg;
+}
+
+export const sql = getPg();
+export const db = drizzle(sql, { schema });
