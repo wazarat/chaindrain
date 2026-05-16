@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — Phase 1 done locally (`apps/mvp` installed, Drizzle introspected, `/api/health` → `{ ok: true, count: 875 }`). Pending: Vercel project + prod smoke test.
+**Last updated:** 2026-05-16 — **Phase 1 DONE ✓** (`/api/health` green locally AND on `chaindrain-mvp.vercel.app`). Ready for Phase 2 (SCORE leg).
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -92,8 +92,8 @@ The `chaindrain_export/` bundle (in `~/Downloads/`) is the input dataset. Key fi
 |---|---|---|
 | **Supabase project** | `uftbynydcmzfggltyjao.supabase.co` (us-east-1, Postgres 17.6) | ACTIVE_HEALTHY. `chaindrain.*` schema with 875×4=3,500 rows. `public.*` empty. |
 | **GitHub** | `github.com/wazarat/chaindrain` | `main` is `fa7e795` (Phase 0 close). Remote is HTTPS; pushes work. |
-| **Vercel (legacy web)** | `chaindrain.vercel.app` | Frozen, untouched. Rollback parachute. Decommission in Phase 6. |
-| **Vercel (mvp)** | TBD (`chaindrain-mvp.vercel.app`) | NOT YET CREATED. Phase 1 will need a new project, Root Directory `apps/mvp`. |
+| **Vercel (legacy web)** | `chaindrain.vercel.app` | Frozen rollback parachute. Last build (post-Phase-1 push) was green. `chaindrain.xyz` custom domain may be migrated off in Phase 1 wrap (user-driven). Decommission in Phase 6. |
+| **Vercel (mvp)** | `chaindrain-mvp.vercel.app` | LIVE (Phase 1 close, 2026-05-16). Root Directory `apps/mvp`, "Include source files outside Root Directory" ON. 4 env vars set (no service-role yet). `/api/health` → `{ok:true,count:875}` in 166ms. |
 | ~~chaindrain-api.fly.dev~~ | — | **Destroyed 2026-05-16** (`flyctl apps destroy`). |
 | ~~chaindrain-agent.fly.dev~~ | — | **Destroyed 2026-05-16**. |
 | ~~Edge Function `cron-trigger`~~ | — | Removed from repo; Vercel Cron will replace. |
@@ -158,8 +158,8 @@ Idempotent — `TRUNCATE chaindrain.identity RESTART IDENTITY CASCADE` first. Ru
 - 875 entities loaded via `scripts/load_seed.mjs` (the bundled `02_seed.sql` is broken — see DECISIONS §15).
 - `commit-msg` hook installed to strip Cursor co-author trailer. **Force-pushed clean Phase 0.**
 
-### Phase 1 — DONE LOCALLY ✓ (commit pending; Vercel manual step + prod smoke test outstanding)
-**Steps 1–9 complete (local):**
+### Phase 1 — DONE ✓ (commit `20c635b`, prod smoke green 2026-05-16 14:57 UTC)
+**All 12 steps complete:**
 1. `pnpm install` ran from repo root in 6.5s after clearing the polluted in-repo `.pnpm-store/` (see §8 + DECISIONS §18). 401 packages, 542 resolved.
 2. `apps/mvp/src/lib/supabase/server.ts` — service-role client, `{ db: { schema: 'chaindrain' } }`, throws clean errors if `SUPABASE_SERVICE_ROLE_KEY` missing.
 3. `apps/mvp/src/lib/supabase/client.ts` — anon browser client, same schema.
@@ -174,10 +174,12 @@ Idempotent — `TRUNCATE chaindrain.identity RESTART IDENTITY CASCADE` first. Ru
 - `drizzle-orm` `^0.36.4` → `^0.45.2` and `drizzle-kit` `^0.30.1` → `^0.31.10`. The 0.30.x drizzle-kit imports `drizzle-orm/gel-core`, a subpath only exported from `drizzle-orm` >= 0.37. Latest pair installed via `pnpm add … @latest`.
 - A repo-root `.npmrc` was added pinning `store-dir=~/Library/pnpm/store` + `auto-install-peers=true` + `strict-peer-dependencies=false`. Without `store-dir`, pnpm falls back to an in-repo `.pnpm-store/v3` when the sandbox blocks writes to the default global store, which is where the original `pnpm install` hang came from.
 
-**Pending (next):**
-10. **Vercel project** — *manual user step*: create `chaindrain-mvp` Vercel project, Root Directory `apps/mvp`, "Include source files outside Root Directory" ON, set 4 env vars (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `DATABASE_URL`, `DATABASE_URL_SESSION` — no `SUPABASE_SERVICE_ROLE_KEY` yet, no `NEXT_PUBLIC_API_BASE_URL`).
-11. **Production smoke test** — `curl https://chaindrain-mvp.vercel.app/api/health` → `count: 875`.
-12. **Commit + push** with subject `phase 1: apps/mvp deps + drizzle introspect + /api/health → 875` (commit first so Vercel has code to deploy from; prod smoke test happens after the user wires up step 10).
+10. Vercel project `chaindrain-mvp` created by user. Root Directory `apps/mvp`, "Include files outside Root Directory" ON, 4 env vars set (`NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `DATABASE_URL`, `DATABASE_URL_SESSION`). Build green on first try.
+11. Prod smoke: `curl https://chaindrain-mvp.vercel.app/api/health` → `HTTP/2 200 {"ok":true,"count":875}` in 166ms (edge `yul1` → `iad1`, `x-vercel-cache: MISS`).
+12. Commit `20c635b` pushed to `main` with author `wazarat <wazarat@outlook.com>` (no Cursor trailer — `commit-msg` hook worked).
+
+**Pending (user, low-priority, can happen any time):**
+- Move `chaindrain.xyz` custom domain from the legacy `chaindrain` Vercel project to `chaindrain-mvp`. User said they'd do this manually and notify. When done, this AI_CONTEXT row should be updated (§4 above) and the legacy project's "rollback parachute" status reaffirmed.
 
 ### Phase 2 — SCORE leg (the dashboard at `/`)
 Per [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "PHASE 2". KPI cards (4) + filter bar (sector/risk_tier/coverage_tier/oracle/chain/bridge) + sortable HTML table over `mvp_master` (50/page, default `risk_score DESC NULLS LAST`) + Radix `<Dialog>` row-click drawer. Routes: `GET /api/entities` (paginated, zod-validated), `GET /api/entities/[entity_id]`. **All SQL through `src/lib/db/queries.ts`** — no inline SQL in route handlers. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
@@ -193,17 +195,17 @@ New migration `20260517000000_alerts.sql` defining `chaindrain.alert(alert_id uu
 
 ---
 
-## 8. Where the chat paused (handoff)
+## 8. Where the chat paused (handoff to Phase 2)
 
-**Phase 1 steps 1–9 complete locally; commit + push pending; steps 10–11 (Vercel) pending user action.**
+**Phase 1 fully closed.** `chaindrain-mvp.vercel.app/api/health` returns `{ok:true,count:875}`. Commit `20c635b` on `main`. Legacy `chaindrain.vercel.app` build also green (rollback parachute intact).
 
-**Why the prior session's `pnpm install` stalled at >7 min:** the repo had an in-repo `.pnpm-store/v3` left over from a previous sandboxed run. That store contained `.claude/settings.local.json` files inside extracted packages (artifacts of a previous agent that wrote settings into package dirs). Those files carry the macOS `com.apple.provenance` extended attribute, which TCC uses to refuse `copyfile` operations. `pnpm install` repeatedly tries to copy packages out of the local store into `node_modules`, gets `EPERM` on every retry, and never makes progress. **Fix that's in the repo now:** root `.npmrc` pins `store-dir=~/Library/pnpm/store`, so pnpm uses the global macOS store path (`~/Library/pnpm/store/v10`) which has no provenance pollution. The bad `.pnpm-store/` directory and the dangling `apps/web/node_modules/` symlinks were both deleted as part of Phase 1. See DECISIONS §18.
+**One trap for the next agent to know about** (see DECISIONS §18): if `pnpm install` ever hangs again with no progress for minutes, the cause is almost certainly that a sandboxed run wrote a fresh `.pnpm-store/v3/` in-repo, and `.claude/settings.local.json` files inside packages have the macOS `com.apple.provenance` xattr blocking `copyfile`. Recipe: `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]` so pnpm can write to the global `~/Library/pnpm/store` (which the root `.npmrc` is already pinned to).
 
-**To resume:** commit + push Phase 1 (see step 12 in §7), then have the user create the `chaindrain-mvp` Vercel project (step 10), then `curl https://chaindrain-mvp.vercel.app/api/health` for prod smoke (step 11). After prod is green, move to Phase 2.
+**To start Phase 2:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 2. The active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md` and `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 2" are the canonical specs. First step is the KPI cards + filter bar + sortable `mvp_master` table at `/`, all SQL via `apps/mvp/src/lib/db/queries.ts`.
 
 **Commit using the standard env-var trick** so the hook strips the Cursor trailer:
 ```bash
 GIT_AUTHOR_EMAIL=wazarat@outlook.com GIT_AUTHOR_NAME=wazarat \
 GIT_COMMITTER_EMAIL=wazarat@outlook.com GIT_COMMITTER_NAME=wazarat \
-git commit -m "phase 1: ..."
+git commit -m "phase 2: ..."
 ```

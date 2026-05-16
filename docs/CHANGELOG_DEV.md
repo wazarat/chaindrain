@@ -574,8 +574,20 @@ Deleted the safe-to-delete scaffold defaults flagged in §3 of AI_CONTEXT.md: `a
 - `apps/mvp/AGENTS.md`, `apps/mvp/CLAUDE.md`, `apps/mvp/README.md` — scaffold defaults.
 
 ### Commits
-- (pending) `phase 1: apps/mvp deps + drizzle introspect + /api/health → 875`
+- `20c635b` `phase 1: apps/mvp deps + drizzle introspect + /api/health → 875` (pushed to `main`)
+
+### Phase 1 close (2026-05-16 ~14:57 UTC)
+User created `chaindrain-mvp` Vercel project (same `wazarat/chaindrain` repo, Root Directory `apps/mvp`, "Include files outside Root Directory" ON, Next.js auto-detected, 4 env vars in Production+Preview: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `DATABASE_URL`, `DATABASE_URL_SESSION` — no service-role yet). First deploy: green on first try. `/` renders the unmodified Next scaffold (real dashboard lands in Phase 2). Prod smoke:
+```
+$ curl -i https://chaindrain-mvp.vercel.app/api/health
+HTTP/2 200
+content-type: application/json
+x-vercel-cache: MISS
+x-vercel-id: yul1::iad1::96rrs-...
+{"ok":true,"count":875}
+# time_total = 0.166s
+```
+Legacy `chaindrain.vercel.app` (`apps/web`) build that auto-triggered from the Phase 1 push was also green — rollback parachute intact. User will migrate the `chaindrain.xyz` custom domain to the MVP project manually at their convenience; not blocking Phase 2.
 
 ### Next steps
-1. **User**: create `chaindrain-mvp` Vercel project per §g above. Confirm prod smoke `{"ok":true,"count":875}`.
-2. **Phase 2**: begin SCORE leg per `docs/AI_CONTEXT.md` §7 Phase 2 — KPI cards + filter bar + sortable HTML table over `mvp_master`, `GET /api/entities`, row-click `<Dialog>`. All SQL through `src/lib/db/queries.ts`.
+**Phase 2 — SCORE leg.** Per `docs/AI_CONTEXT.md` §7 Phase 2 and `chaindrain_export/CURSOR_PROMPT.md` "PHASE 2": KPI cards (4) + filter bar (sector/risk_tier/coverage_tier/oracle/chain/bridge) + sortable HTML table over `chaindrain.mvp_master` (50/page, default `risk_score DESC NULLS LAST`) + Radix `<Dialog>` row-click drawer. Routes: `GET /api/entities` (paginated, zod-validated), `GET /api/entities/[entity_id]`. All SQL through `apps/mvp/src/lib/db/queries.ts` — no inline SQL in route handlers. Acceptance: `risk_tier=critical` → 59 rows, RealT top.
