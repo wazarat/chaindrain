@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 3 DONE ✓ (locally + initial prod deploy failed, then fixed)**. DETECT leg: `chaindrain.alert` table live; 5 pollers under `src/lib/pollers/`; `/api/cron/poll` protected by `CRON_SECRET` Bearer auth. **The 5-min cadence runs from GitHub Actions (`.github/workflows/cron-poll.yml`), NOT Vercel Cron** — Vercel Hobby plan rejects sub-daily schedules at deploy time, which broke the first Phase 3 push (`fee1948`); fix shipped in the follow-up commit (see DECISIONS §23). `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E synthetic smoke: USDC=0.97 → critical alert, `fanout_count=70`, `fanout_tvl_usd=$39.5B` (cleaned up). Ready for Phase 4 (FAN OUT leg). Phase 2 prod also smoke-verified live: `GET /api/entities?riskTiers=critical&pageSize=1` returns `total=59`, top=RealT (0.8532) in 213ms.
+**Last updated:** 2026-05-16 — **Phase 4 DONE ✓ (locally)**. FAN OUT leg: `/alerts` index (7-day default, sortable by `severity` / `fanout_tvl_usd` / `fanout_count` / `detected_at`, with `signal_type` + `severity` + time-window filters) + `/alerts/[alert_id]` contagion view (alert header with raw_signal JSON + affected entities table ordered by `blast_radius_usd DESC` + Method B similar-exposure panel). All Phase 4 queries through `src/lib/db/queries.ts`: `listAlerts`, `getAlertById`, `getAffectedEntities`, `getSimilarExposure` (parameterized on `dependency_field` + `similarVia` — see DECISIONS §24). `getKpiSummary` now joins `chaindrain.alert` so the dashboard's 4th KPI card surfaces "Alerts (24h)" with a link to `/alerts`. Cross-page `<SiteHeader>` with active-tab nav. `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E smoke (4 synthetic alerts seeded then cleaned up): Chainlink contagion page (90 affected entities + 10 Method B similar) renders in **198ms application-code** — under the 200ms spec budget. Ready for Phase 5 (daily digest via Resend). Phase 3 prod deploy still requires the user to set `CRON_SECRET` in Vercel before the GitHub Actions cron produces real alerts (see §8).
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -52,13 +52,16 @@ chaindrain/
 │       ├── src/app/api/entities/route.ts                ← Phase 2 — paginated, zod-validated query params
 │       ├── src/app/api/entities/[entity_id]/route.ts    ← Phase 2 — single mvp_master row, zod-validated UUID
 │       ├── src/app/api/cron/poll/route.ts               ← Phase 3 — Bearer CRON_SECRET, calls runPollers()
-│       ├── src/components/{kpi-cards,filter-bar,multi-select,entities-table,entity-drawer}.tsx  ← Phase 2 UI
+│       ├── src/app/alerts/page.tsx                      ← Phase 4 — alerts index, 7-day default, sortable + filterable
+│       ├── src/app/alerts/[alert_id]/page.tsx           ← Phase 4 — contagion view (header + affected + similar exposure)
+│       ├── src/components/{kpi-cards,filter-bar,multi-select,entities-table,entity-drawer,site-header}.tsx  ← Phase 2 UI + Phase 4 SiteHeader nav
+│       ├── src/components/{alerts-filter-bar,alerts-table,alert-header,affected-entities-table,similar-exposure-panel}.tsx  ← Phase 4 UI
 │       ├── src/lib/pollers/{types,stablecoin-depeg,oracle-deviation,bridge-pause,admin-tx,tvl-drop}.ts   ← Phase 3 — 5 pure poller fns + shared types
 │       ├── src/lib/pollers/*.test.ts                    ← Phase 3 — vitest unit tests (29 cases, all green)
 │       ├── src/workers/poll-signals.ts                  ← Phase 3 — orchestrator; tsx-runnable via `pnpm poll`; also called from cron route
 │       ├── src/lib/supabase/{server,client}.ts   ← service-role + anon clients on `chaindrain` schema
 │       ├── src/lib/db/{index,queries,schema,relations}.ts + meta/   ← queries.ts is the ONLY SQL surface; routes import from it
-│       ├── src/lib/api/schemas.ts                       ← Phase 2 — entitiesQuerySchema + entityIdParamsSchema (zod)
+│       ├── src/lib/api/schemas.ts                       ← Phase 2/4 — entitiesQuerySchema + entityIdParamsSchema + alertsQuerySchema + alertIdParamsSchema (zod)
 │       ├── src/lib/{utils,url-state}.ts                 ← Phase 2 — formatters / risk-tier classes / URL search-string helpers
 │       ├── drizzle.config.ts   ← schemaFilter ['chaindrain'], uses DATABASE_URL_SESSION
 │       ├── vitest.config.ts   ← Phase 3 — `pool: "forks"`, includes src/**/*.test.ts
@@ -222,50 +225,62 @@ Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5
 
 `apps/mvp/.env.local.example` now documents `CRON_SECRET=` (generate with `openssl rand -hex 32`), `ETHERSCAN_API_KEY=` (free at etherscan.io/myapikey), optional `ETH_RPC_URL=` override.
 
-### Phase 4 — FAN OUT leg (the differentiator)
-`/alerts` index (last 7 days, sortable by severity/fanout_tvl_usd/detected_at) + `/alerts/[alert_id]` contagion view: header (signal_type/severity/dependency_key/raw_signal JSON) + affected entities table (ordered by `blast_radius_usd DESC`) + similar-exposure panel (Method B query from `mvp_scope_spec.md` §5.2). All <200ms via the GIN indexes already in place.
+### Phase 4 — FAN OUT leg — DONE ✓ (locally, 2026-05-16)
+**The differentiator.** Phase 4 ships two pages plus 4 new queries + 5 new UI components + a navigation header used by both pages.
+
+- **Queries** (`src/lib/db/queries.ts`): `listAlerts({ windowDays, signalTypes?, severities?, sortField, sortDirection, page, pageSize })` with severity sort via `CASE` expression (`sql.unsafe(...)`); `getAlertById(alertId)`; `getAffectedEntities(field, key, { limit })` reuses the `computeFanout` GIN-friendly predicate and orders by `blast_radius_usd DESC NULLS LAST`; `getSimilarExposure(field, key, { similarVia?, limit })` implements Method B over a CTE pipeline (`affected → exposure → exposure_arr`) and uses `IN (SELECT ...)` to count overlap members per candidate. `defaultSimilarVia(field)` returns `oracle_providers` for everything except oracle alerts, which default to `stablecoin_dependencies` so the dimensions don't collapse. `getKpiSummary()` now runs the entity aggregate + a 24h alert count in `Promise.all`.
+- **Pages**: `/alerts` (server, `runtime: nodejs`, `dynamic: force-dynamic`) with `alertsQuerySchema` zod parsing, `<AlertsFilterBar>` (3-window segmented control + signal-type + severity multi-selects, URL-driven state inside `useTransition` like the SCORE filter bar), `<AlertsTable>` (sortable headers, relative-time + absolute-time per row, dependency chip + field label, blast radius compact-USD, pagination). `/alerts/[alert_id]` parses the UUID via `alertIdParamsSchema` and 404s on a bad/missing id; the page header is `<AlertHeader>` (severity pill, signal label, dependency_key + field, detected_at, fanout count + blast radius stat strip, raw_signal JSON viewer); affected table is `<AffectedEntitiesTable>` (matching dependency chip highlighted red); similar-exposure panel is `<SimilarExposurePanel>` (amber overlap chips, overlap_score bold). Footer surfaces the `similarVia` axis so users see which dimension drove the similar set.
+- **Schema/utils**: `src/lib/utils.ts` adds `severityClass`, `signalTypeLabel`, `dependencyFieldLabel`, `formatDateTime`, `formatRelativeTime`. `src/lib/api/schemas.ts` adds `SIGNAL_TYPES`, `SEVERITIES`, `ALERT_SORT_FIELDS`, `alertsQuerySchema`, `alertIdParamsSchema`. `src/components/site-header.tsx` is the new cross-page nav (active tab pill).
+- **Dashboard wiring**: 4th KPI card swapped from "Total blast radius" to "Alerts (24h)" with critical-count sub-text and a link to `/alerts`. The dashboard's inline header was replaced with `<SiteHeader active="dashboard" />` so the same nav is on every page.
+- **Acceptance (live, smoke-verified on 2026-05-16)**: seeded 4 synthetic alerts directly into `chaindrain.alert` via Supabase MCP (USDC depeg / Chainlink deviation / LayerZero pause / aave TVL drop, all tagged `raw_signal.source='phase4-smoke'`), curled the dev server on :3010, then deleted. Per-page timings: `/alerts` warm = 130ms application-code; `/alerts/[Chainlink]` (90 affected + 10 Method-B similar) = **198ms application-code** — at the 200ms spec budget. `/alerts/[USDC]` rendered 70 affected entities top-5 = Ether.fi Cash / JustLend / BlackRock BUIDL / Securitize / Ondo (matches `blast_radius DESC` ground truth). Method B for `USDC` over `oracle_providers` returned Ether.fi / Ethena (USDe) / Usual Money (overlap=2 each, Chainlink+Pyth or Chainlink+RedStone). Method B for `Chainlink` over `stablecoin_dependencies` returned Curve Finance (overlap=5), Pendle / JustLend / Jupiter (overlap=3). Bad UUID and unknown UUID both 404 (17ms / 68ms).
+- **Out of Phase 4 scope (deferred per spec, refuse if asked)**: alert acknowledge/triage UI, alert dedup, email/Slack/Discord (Phase 5+), Forta/incident-ledger ingestion (post-MVP), historical-alert replay/backtesting. Alert dedup is still deferred — if a poller produces the same `(signal_type, dependency_key)` 12 times an hour, the `/alerts` UI will show 12 rows in the window. Phase 4 explicitly puts that noise in the open so we can decide on a dedup policy when real signal arrives.
 
 ### Phase 5 — Daily digest
 `src/app/api/cron/digest/route.ts` runs `0 9 * * *` daily via Vercel Cron. Resend SDK, plain HTML, subject `Chaindrain Daily — N critical / M high alerts`, 3 lines per alert. Env: `RESEND_API_KEY`, `DIGEST_RECIPIENTS` (comma-separated). Tag `v0.1.0` when all 6 done-criteria boxes from CURSOR_PROMPT.md are green.
 
 ---
 
-## 8. Where the chat paused (handoff to Phase 4)
+## 8. Where the chat paused (handoff to Phase 5)
 
-**Phase 3 fully closed locally + initial deploy failed and was fixed.** Migration applied to prod Supabase, Drizzle re-introspected, 5 pollers + orchestrator + cron route + vitest tests all green. End-to-end acceptance proven via one-off live smoke (USDC=0.97 → critical alert with `fanout_count=70, fanout_tvl_usd=$39.5B`, persisted + readback + cleanup).
+**Phase 4 fully closed locally.** `/alerts` index + `/alerts/[alert_id]` contagion view + Method B similar-exposure panel + KPI rewire + cross-page nav. `pnpm typecheck/lint/build/test` all clean. End-to-end smoke proven on the live DB: 4 synthetic alerts seeded → all pages render → contagion warm ≤ 200ms application-code → synthetic alerts deleted (so the prod `chaindrain.alert` table is back to 0 rows).
 
-**Deploy fix shipped in commit after `fee1948`:** the first Phase 3 push failed because `apps/mvp/vercel.json` declared a `*/5 * * * *` cron and the Vercel project is on the **Hobby plan**, which only allows daily crons (error: "Hobby accounts are limited to daily cron jobs"). Resolution:
-- Deleted `apps/mvp/vercel.json` (Phase 5's `0 9 * * *` digest will recreate it — that schedule is Hobby-compatible).
-- Added `.github/workflows/cron-poll.yml` — GitHub Actions cron at `*/5 * * * *` that curls `https://chaindrain-mvp.vercel.app/api/cron/poll` with `Authorization: Bearer ${{ secrets.CRON_SECRET }}`. Public repo = free Actions minutes. See DECISIONS §23.
-- Refactored `.github/workflows/ci.yml`: dropped dead `api-lint`, `agent-lint` jobs (target dirs deleted in Phase 0) and the noisy `web-lint-typecheck` (apps/web is frozen). Added a real `mvp` job running `lint + typecheck + test` so red CI = real Phase 3 regression.
+**Phase 3 still has open prod-config gaps (carried over from the previous handoff). The Phase 4 commit does not change any of this:**
+1. **`CRON_SECRET` not set in Vercel `chaindrain-mvp` env vars** (Production + Preview + Development). Value to use: `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846` (matches `apps/mvp/.env.local` and the value the user should put in GitHub repo secrets). Without it, `POST /api/cron/poll` returns 500 `cron_secret_not_configured` and the cron never produces alerts. **Verified at the start of the Phase 4 session via `curl -X POST https://chaindrain-mvp.vercel.app/api/cron/poll` → 500.**
+2. **`CRON_SECRET` not set in GitHub repo secrets** (Settings → Secrets and variables → Actions → New repository secret, name `CRON_SECRET`, same value). Without it, the workflow exits 1.
+3. **Confirm `ETHERSCAN_API_KEY` is set in Vercel Preview as well as Production.**
+4. **Set Ignored Build Step on both Vercel projects** so pushes touching `apps/web/` don't fire `chaindrain-mvp` builds and vice versa (see §9 below).
+5. **First successful cron fire** will produce rows in `chaindrain.alert`, which will then populate the new `/alerts` page on prod automatically. Until then, `/alerts` will render "No alerts in the last 7 days." and the dashboard KPI will show "0 alerts (24h)" — both empty-states are handled correctly.
 
-**User actions required after this commit:**
-1. **Add `CRON_SECRET` to GitHub repo secrets** (Settings → Secrets and variables → Actions → New repository secret, name `CRON_SECRET`, value `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846`). Without it, the workflow exits 1 with `CRON_SECRET repo secret is not set`.
-2. **Add `CRON_SECRET` to Vercel `chaindrain-mvp` env vars** (Production + Preview + Development) — same value. Without it, the route returns 500 `cron_secret_not_configured`.
-3. **Confirm `ETHERSCAN_API_KEY` is set in Vercel Preview as well as Production** (user said Production is set).
-4. **Set Ignored Build Step on both Vercel projects** so future pushes only build the affected project (see §9 below).
-5. **First cron fire** will happen within ~5–15 min of the workflow being merged (GitHub Actions cron has up-to-15-min jitter). Verify via Actions tab → `cron-poll-signals` runs, plus SQL probe: `SELECT signal_type, severity, dependency_key, fanout_count, fanout_tvl_usd, detected_at FROM chaindrain.alert ORDER BY detected_at DESC LIMIT 20;`. If all pollers degrade gracefully (no alerts produced), the row count stays 0 and the route still returns 200 — normal for a quiet 5-min window.
-6. Manual smoke: `curl -X POST -H "Authorization: Bearer $CRON_SECRET" https://chaindrain-mvp.vercel.app/api/cron/poll` should return `{ ok: true, summary: { ... per-poller outcomes ... } }`. Or trigger the workflow from the Actions tab via `workflow_dispatch`.
+**Quick prod-demo of Phase 4 without waiting for the cron:** if the user wants to see the live `/alerts` UI populated immediately after the Phase 4 deploy, seed synthetic alerts directly into prod Supabase via the MCP. The exact SQL used in the Phase 4 smoke was:
 
-**Out of scope for Phase 3 (intentionally deferred, refuse if asked):** an `/alerts` UI surface (that's Phase 4), email/Slack/Discord notifications (Phase 5), additional pollers, alert replay, LLM reasoning. Alert dedup is also deferred — if a signal stays in the bad state for an hour, the cron will emit 12 alerts. We'll revisit in Phase 4 once the UI exposes the noise.
+```sql
+INSERT INTO chaindrain.alert (alert_id, detected_at, signal_type, severity, dependency_key, dependency_field, raw_signal, fanout_count, fanout_tvl_usd)
+SELECT '00000000-0000-4000-a000-000000000001'::uuid, now() - interval '2 minutes', 'stablecoin_depeg', 'critical', 'USDC', 'stablecoin_dependencies',
+       '{"source":"phase4-demo","price":0.97,"deviation":0.03}'::jsonb,
+       COUNT(*)::int, COALESCE(SUM(blast_radius_usd),0)::numeric
+FROM chaindrain.mvp_master WHERE stablecoin_dependencies && ARRAY['USDC']::text[];
+-- Repeat with different uuids/signal_types/dependency_keys for variety. Clean up with:
+-- DELETE FROM chaindrain.alert WHERE raw_signal->>'source' LIKE 'phase4-%';
+```
 
 **Two traps from earlier phases still relevant:**
-- **pnpm store-dir** (DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, run `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]`. The root `.npmrc` already pins `store-dir=~/Library/pnpm/store`. Hit again briefly this session — confirmed the recipe still works.
-- **React 19's `react-hooks/set-state-in-effect`** (Phase 2 design notes): use key-based remount (e.g. `<DrawerInner key={entityId} />`) or the "adjust state during render" pattern for URL-driven inputs. Carry forward into Phase 4 alert detail components.
+- **pnpm store-dir** (DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, run `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]`. The root `.npmrc` already pins `store-dir=~/Library/pnpm/store`.
+- **React 19's `react-hooks/set-state-in-effect`** (Phase 2 design notes): use key-based remount (e.g. `<DrawerInner key={entityId} />`) or the "adjust state during render" pattern for URL-driven inputs. Phase 4's `<AlertsFilterBar>` uses URL-as-source-of-truth so it sidesteps the rule entirely — no local state for filters.
 
-**Phase 3 design notes worth carrying forward:**
-- **Pure poller pattern:** each poller exposes a *pure classifier* (e.g. `classifyStablecoinPrices`, `classifyOracleDeviations`, `classifyBridgeReadings`, `classifyAdminTx`, `classifyTvlDrops`) for unit tests, and an *I/O wrapper* (`pollX(ctx, deps)`) that wires fetch/RPC. Tests cover the classifier with synthetic inputs; the wrapper is integration-tested through the live cron. Don't add tests that mock viem — use the classifier seam.
-- **Fanout abstraction:** `DependencyField` is now a union over array columns (`stablecoin_dependencies` / `oracle_providers` / `bridge_dependencies` / `chain_deployments`) AND scalar columns (`admin_address` / `defillama_slug`). The `ARRAY_DEPENDENCY_FIELDS` constant in `src/lib/pollers/types.ts` is the runtime branch — `computeFanout` uses `&&` for arrays and `=` for scalars. When Phase 4 adds the contagion view, reuse `computeFanout` (it's already the canonical query) and ride the GIN indexes that already exist on the array columns.
-- **Orchestrator atomicity:** `runPollers` does *per-alert* writes (compute fanout → insertAlert), not a single transaction. If the DB drops mid-run, you get a partial alert set, not zero. This matches the spec's "persist alert + fanout numbers atomically" requirement at the row level. Don't wrap in a transaction in Phase 4 unless you have a concrete reason.
-- **postgres-js jsonb writes:** explicit `JSON.stringify` + `::jsonb` cast in `insertAlert`. `sql.json(...)` from postgres-js has a strict `JSONValue` type that's incompatible with our `Record<string, unknown>` raw_signal shape. The stringify+cast path is cleaner and type-safe.
+**Phase 4 design notes worth carrying forward:**
+- **Method B parameterization** (DECISIONS §24): `getSimilarExposure(field, key, { similarVia?, limit })` accepts a `similarVia` discriminator that must be a different array axis than the alert's `dependency_field`. `defaultSimilarVia(field)` returns `oracle_providers` for everything except oracle alerts (which default to `stablecoin_dependencies`). The CTE pipeline (`affected → exposure → exposure_arr`) hits the GIN indexes on the array columns and stays under 200ms for any single-key alert. Reuse this seam for any future contagion-related queries.
+- **Severity sort via `sql.unsafe(CASE ...)`**: postgres-js single-arg `sql(identifier)` only handles identifier quoting, not arbitrary expressions. The `severity` sort relies on a CASE expression that maps `critical → 0`, `high → 1`, etc. so `ORDER BY severity ASC` semantically means "critical first". The whitelist in `ALERT_SORTABLE` is the only injection guard — if you add a new sort field, add it to `ALERT_SORTABLE` and `ALERT_SORT_FIELDS` (zod enum) in lockstep.
+- **`AffectedEntityRow` extends `EntityRow` with `defillama_slug` + `admin_address`** so scalar-key alerts (`admin_tx`, `tvl_drop`) can render the matching-dependency chip without an extra fetch. The `<AffectedEntitiesTable>` collects matching members via a small `collectMatchingMembers` helper that branches on array vs scalar via the `ARRAY_FIELD_TO_COLUMN` table — keep this synchronized with `ARRAY_DEPENDENCY_FIELDS` if a new dependency_field ever appears.
+- **`<SiteHeader>` is the canonical nav** for every full-page route. Phase 5's digest preview page (if it exists) should reuse it. Future routes should pass `active={'dashboard'|'alerts'|...}` and a `legSubtitle` (e.g. `"DIGEST · MVP"`).
+- **KPI: `getKpiSummary` now hits two tables.** It's still one round-trip (`Promise.all`) so the dashboard cost is unchanged in p95. If you ever need to split, the queries are obviously separable.
 
-**To start Phase 4:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 4. Spec lives in `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 4". First step is `app/alerts/page.tsx` (7-day index, sortable by severity / fanout_tvl_usd / detected_at) + `app/alerts/[alert_id]/page.tsx` (header + affected entities table ordered by `blast_radius_usd DESC` + similar-exposure panel via the spec's Method B query). All queries through `src/lib/db/queries.ts`; reuse `computeFanout` for the affected table; add a new `getSimilarExposure(dependency_field, dependency_key, limit)` for the Method B panel.
+**To start Phase 5:** open a fresh chat and read this file → DECISIONS → CHANGELOG_DEV → §7 Phase 5. Spec lives in `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 5". Build `src/app/api/cron/digest/route.ts` (runs `0 9 * * *` daily — Vercel Hobby allows daily crons, so this *does* go in `apps/mvp/vercel.json` re-created with only the daily entry; the 5-min poll stays on GitHub Actions per DECISIONS §23). Pull last-24h alerts via `listAlerts({ windowDays: 1, sortField: 'severity', sortDirection: 'asc' })`; for each critical, fetch top-5 affected via `getAffectedEntities(field, key, { limit: 5 })`. Email body is plain HTML, no images. Subject: `Chaindrain Daily — N critical / M high alerts`. Env: `RESEND_API_KEY`, `DIGEST_RECIPIENTS` (comma-separated). Optional: an unsubscribe link is overkill for a single-tenant tool — refuse if it comes up.
 
 **Commit using the standard env-var trick** so the hook strips the Cursor trailer:
 ```bash
 GIT_AUTHOR_EMAIL=wazarat@outlook.com GIT_AUTHOR_NAME=wazarat \
 GIT_COMMITTER_EMAIL=wazarat@outlook.com GIT_COMMITTER_NAME=wazarat \
-git commit -m "phase 3: ..."
+git commit -m "phase 4: ..."
 ```
 
 ---

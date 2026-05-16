@@ -303,3 +303,20 @@ GitHub Actions cron is the closest substitute that:
 **Cleanup shipped in the same commit:** dropped `api-lint` and `agent-lint` jobs from `.github/workflows/ci.yml` (their `apps/api/` and `apps/agent/` directories were deleted in Phase 0); dropped the noisy `web-lint-typecheck` (apps/web is frozen rollback parachute); added a real `mvp` job running `lint + typecheck + test` for the active surface.
 
 **See:** `.github/workflows/cron-poll.yml`, `.github/workflows/ci.yml`, `docs/AI_CONTEXT.md` §9 (Vercel project routing & deploy ops).
+
+---
+
+## 24. Method B similar-exposure: parameterize the `similarVia` axis and use `IN (SELECT …)` not `ANY((SELECT … arr))`
+
+**Decision (2026-05-16, Phase 4):** `getSimilarExposure(dependency_field, dependency_key, { similarVia?, limit })` in `apps/mvp/src/lib/db/queries.ts` accepts an explicit `similarVia: SimilarExposureField` parameter (one of `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`). When omitted, `defaultSimilarVia(field)` returns `oracle_providers` for every alert `dependency_field` *except* `oracle_providers` itself — in which case it returns `stablecoin_dependencies`. The implementation uses a `WITH affected → exposure → exposure_arr` CTE chain and counts per-candidate overlap via `unnest(e.<similar_via>) m WHERE m IN (SELECT member FROM exposure)` — **not** via `m = ANY((SELECT members FROM exposure_arr))`, which Postgres parses as `text = text[]` and rejects with `operator does not exist: text = text[]`.
+
+**Rationale:**
+- The spec example in `chaindrain_export/CURSOR_PROMPT.md` "PHASE 4" and `mvp_scope_spec.md` §5.2 ("Method B") hard-codes `WHERE NOT 'USDC' = ANY(stablecoin_dependencies)` and counts overlap on `oracle_providers`. That's correct for a `stablecoin_depeg` alert, but if we hard-coded the same dimensions for an `oracle_deviation` alert, the "similar set" would degenerate (we'd be measuring oracle-overlap to a set already defined by oracle membership). Parameterizing `similarVia` and forcing it to differ from the alert axis preserves the semantic: "find entities that aren't in the affected set but share a different attack-surface dimension with it".
+- The default-via map keeps Phase 4 ergonomic: 4 of the 5 Phase 3 pollers emit alerts that key on `stablecoin_dependencies`, `bridge_dependencies`, `admin_address`, or `defillama_slug`, and `oracle_providers` is a strong cross-cutting axis for all of them. Only `oracle_deviation` alerts need the explicit fallback.
+- The `IN (SELECT ...)` rewrite was forced by a first-draft failure on live data: the natural `m = ANY((SELECT members FROM exposure_arr))` produced `operator does not exist: text = text[]`. Postgres reads the outer parens as the `ANY` argument and the inner parens as a scalar subquery returning a `text[]`, so the comparison becomes `text = text[]`, which has no operator. `IN (SELECT ...)` with a row-valued subquery is unambiguous: `m IN (SELECT member FROM exposure)` works exactly as intended and stays GIN-indexable through the `e.<similar_via> && (SELECT members FROM exposure_arr)` candidate filter on the outer query.
+
+The smoke run on the live DB confirmed the design: for a synthetic USDC depeg alert, Method B over `oracle_providers` surfaces Ether.fi / Ethena (USDe) / Usual Money (overlap=2 each via Chainlink+Pyth or Chainlink+RedStone) — entities clearly *not* USDC-exposed but sitting on the same oracle attack surface as the USDC-using cohort. For a synthetic Chainlink deviation alert, Method B over `stablecoin_dependencies` surfaces Curve Finance (overlap=5), exactly the kind of contagion-neighbor the spec asks for.
+
+**Future extension (Phase 6+):** Method C (embedding similarity from `mvp_scope_spec.md` §4.4) would replace the CTE-based overlap with a vector cosine over a learned embedding. The `getSimilarExposure` seam stays — only the function body changes. Don't refactor the seam to add `algorithm: 'jaccard' | 'embedding'` until Method C actually exists; YAGNI.
+
+**See:** `apps/mvp/src/lib/db/queries.ts:getSimilarExposure`, `apps/mvp/src/app/alerts/[alert_id]/page.tsx` (call site), `chaindrain_export/data/mvp_scope_spec.md` §5.2.

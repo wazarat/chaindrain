@@ -10,6 +10,131 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #7) — Phase 4: FAN OUT leg — /alerts index + /alerts/[id] contagion view + Method B similar-exposure panel
+
+### Session goals
+Phase 4 per `docs/AI_CONTEXT.md` §7 + `chaindrain_export/CURSOR_PROMPT.md` "PHASE 4" + `chaindrain_export/data/mvp_scope_spec.md` §5.2 (Method B). Build `/alerts` index + `/alerts/[alert_id]` contagion view with affected-entities table + parameterized Method B similar-exposure panel. All queries through `src/lib/db/queries.ts`. Budget <200ms.
+
+### Pre-flight verification (live prod, 2026-05-16)
+- `GET /api/health` → `200 {"ok":true,"count":875}` in 137ms — Phase 1 green.
+- `GET /api/entities?riskTiers=critical&pageSize=1` → 200 in 275ms — Phase 2 green.
+- `POST /api/cron/poll` (no auth) → **500** (`cron_secret_not_configured`) — Phase 3 route IS deployed, but `CRON_SECRET` not yet set in Vercel env. Per DECISIONS §22, the route hard-fails 500 before auth when the secret is missing, so the GitHub Actions cron exits 1 every 5 min and `chaindrain.alert` is still at 0 rows in prod. This is a user-action gap (see AI_CONTEXT §8), not a Phase 4 blocker — the FAN OUT UI must handle the empty table state anyway.
+
+### What was done
+
+#### a. Query layer additions (`apps/mvp/src/lib/db/queries.ts`)
+- **`listAlerts(opts)`**: paginated, supports `windowDays` time window (default 7), optional `signalTypes` + `severities` filters, sort by `detected_at | severity | fanout_tvl_usd | fanout_count` ASC/DESC. Severity sort uses a `CASE WHEN severity='critical' THEN 0 WHEN 'high' THEN 1 ...` expression injected via `sql.unsafe(...)` from a hardcoded `ALERT_SORTABLE` whitelist (only safe inputs reach the unsafe path). Returns `{ rows: AlertRow[], total, page, pageSize }`.
+- **`getAlertById(alertId)`**: single row from `chaindrain.alert`. Returns `AlertRow | null`.
+- **`getAffectedEntities(field, key, { limit })`**: reuses the array-vs-scalar branch logic from `computeFanout` (DECISIONS §20) so it rides the existing GIN indexes for array fields. Returns `AffectedEntityRow[]` (extends `EntityRow` with `defillama_slug` + `admin_address` so scalar-key alerts can render the matching-dependency chip without a second fetch). Ordered by `blast_radius_usd DESC NULLS LAST, risk_score DESC NULLS LAST, name ASC`.
+- **`getSimilarExposure(field, key, { similarVia?, limit })`**: Method B from `mvp_scope_spec.md` §5.2, parameterized. CTE pipeline `affected → exposure → exposure_arr` builds the set of dependency members shared across the affected set (e.g. all `oracle_providers` mentioned by USDC-using entities). The outer SELECT then finds entities NOT in the affected set whose `similarVia` column overlaps with that exposure set, counts the overlap via `unnest(...) WHERE m IN (SELECT member FROM exposure)`, and orders by `overlap_score DESC, blast_radius_usd DESC, risk_score DESC, name`. `defaultSimilarVia(field)` returns `oracle_providers` for everything except oracle alerts (which return `stablecoin_dependencies`) so the dimensions never collapse. Two iterations were needed: the first draft used `m = ANY((SELECT members FROM exposure_arr))` which Postgres parses as `text = text[]` (scalar comparison) and errored with `operator does not exist: text = text[]` — switched to `IN (SELECT ...)` which is unambiguous. See DECISIONS §24.
+- **`getKpiSummary()`**: now runs the entity aggregate + a 24h alert count in `Promise.all`, returning two new fields (`alerts_24h`, `alerts_24h_critical`). Single round-trip via the same `postgres` client; no measurable cost vs the Phase 2 shape.
+- Re-exported `AlertSeverity`, `AlertSignalType`, `DependencyField` from `queries.ts` so UI components don't have to reach into `lib/pollers/types.ts`.
+
+#### b. zod schemas (`apps/mvp/src/lib/api/schemas.ts`)
+- `SIGNAL_TYPES`, `SEVERITIES`, `ALERT_SORT_FIELDS` constants exported for reuse in UI components.
+- `alertsQuerySchema`: `page` / `pageSize` (1–200), `sort` (enum), `direction` (asc/desc), `windowDays` (1–90, default 7), `signalTypes` + `severities` (CSV or repeated query-param, validated against enum).
+- `alertIdParamsSchema`: `z.object({ alert_id: z.string().uuid() })`.
+
+#### c. UI utility additions (`apps/mvp/src/lib/utils.ts`)
+- `severityClass(severity)` — pill color classes (red/orange/yellow/emerald) matching `riskTierClass` palette.
+- `signalTypeLabel(type)` and `dependencyFieldLabel(field)` — human-readable display names backed by static maps. Falls through to the raw value if unknown so debugging is easy.
+- `formatDateTime(value)` — month-day-year + hour:minute + timezone for absolute timestamps.
+- `formatRelativeTime(value, now?)` — "just now" / "5 mins ago" / "3 hrs ago" / "2 days ago" / absolute fallback for >30d. Accepts an injected `now` for unit testing.
+
+#### d. Pages
+
+**`/alerts`** (`src/app/alerts/page.tsx`) — server component, `runtime: nodejs`, `dynamic: force-dynamic`. Awaits `searchParams`, runs through `alertsQuerySchema.safeParse` (falls back to defaults on parse failure rather than 500-ing the page), calls `listAlerts(...)`. Renders:
+- `<SiteHeader active="alerts" legSubtitle="FAN OUT leg · MVP" />`.
+- Title + description (with the current `windowDays` interpolated).
+- `<AlertsFilterBar windowDays={params.windowDays} />` — 3-button segmented control (24h / 7d / 30d) + signal-type multi-select + severity multi-select. Pushes via `router.push('/alerts?' + buildSearchString(...), { scroll: false })` inside `useTransition`. Clear-all wipes all params and pushes to `/alerts` (resets to defaults).
+- `<AlertsTable rows={...} sort={...} direction={...} windowDays={...} />` — sortable column headers for `detected_at` / `severity` / `fanout_count` / `fanout_tvl_usd`, severity pill, signal-type label, dependency_key + field chip, fanout count, blast radius compact-USD, "View →" link to detail. Relative-time + absolute-time tooltip per row. Pagination prev/next. Empty state shows "No alerts in the last {N} days."
+
+**`/alerts/[alert_id]`** (`src/app/alerts/[alert_id]/page.tsx`) — server component. Awaits `params`, runs through `alertIdParamsSchema.safeParse` (notFound() on bad UUID), then `getAlertById(id)` (notFound() if missing). Computes `similarVia = defaultSimilarVia(alert.dependency_field)`. Runs `getAffectedEntities(field, key, { limit: 200 })` + `getSimilarExposure(field, key, { similarVia, limit: 10 })` in parallel via `Promise.all`. Renders:
+- `<SiteHeader active="alerts" />` + `<AlertHeader alert={...} />` (severity pill, signal label, dependency_key + field label, detected_at relative + absolute, fanout count + blast radius stat strip, raw_signal JSON viewer in a `<pre>` with max-height + overflow scroll, alert_id code block).
+- `<AffectedEntitiesTable rows similarVia dependencyField dependencyKey />` — header with red-pill `<field>: <key>` chip, table with name / sector / TVL / risk score / tier / matching-dependency chip (highlighted red for the alert's key) / blast radius. Empty state handled.
+- `<SimilarExposurePanel rows similarVia dependencyKey />` — "Top N entities *not* exposed to {key} directly, ranked by shared {similarVia} overlap with the affected set (Method B)." Table shows name / sector / risk / tier / amber overlap chips (the actual shared members) / `overlap_score` (bold) / blast radius. Empty state handled.
+- Footer shows the data sources + which `similarVia` axis drove the panel.
+
+#### e. Dashboard rewire (`apps/mvp/src/app/page.tsx`, `src/components/kpi-cards.tsx`)
+- Replaced the inline page header with `<SiteHeader active="dashboard" legSubtitle="SCORE leg · MVP" />` so the cross-page nav is identical.
+- 4th KPI card swapped: was "Total blast radius" (icon `Radio`), now "Alerts (24h)" (icon `Bell`, blue). Sub-text shows the critical count if > 0, otherwise an explainer. Card itself is wrapped in `<Link href="/alerts">` so the user can click through. The first three cards (Critical / High / Total TVL) are unchanged.
+
+#### f. Cross-page nav (`apps/mvp/src/components/site-header.tsx`)
+- Brand pill + leg subtitle + nav (`Risk dashboard` / `Alerts`) with active-tab styling. Used by `/`, `/alerts`, `/alerts/[id]`.
+
+#### g. Local verification
+- `pnpm --filter @chaindrain/mvp typecheck` → clean across `apps/mvp`, `apps/web`, `packages/shared-types`.
+- `pnpm --filter @chaindrain/mvp lint` → clean. (apps/web's `next lint` fails on an interactive prompt — pre-existing, CI doesn't touch it.)
+- `pnpm --filter @chaindrain/mvp test` → **29/29 green** in 389ms. No new tests added — Phase 4 is UI + SQL + integration; the existing classifier tests still pass.
+- `pnpm --filter @chaindrain/mvp build` → clean, 1.2s compile + 2.3s typecheck. New routes registered: `ƒ /alerts`, `ƒ /alerts/[alert_id]`. Existing routes unchanged.
+
+#### h. Live E2E acceptance smoke (one-off, cleaned up)
+Seeded 4 synthetic alerts directly into prod `chaindrain.alert` via Supabase MCP (all tagged `raw_signal.source='phase4-smoke'`):
+- USDC depeg / critical / `stablecoin_dependencies` / fanout 70 / $39.5B blast radius
+- Chainlink deviation / high / `oracle_providers` / fanout 90 / $233B blast radius
+- LayerZero pause / critical / `bridge_dependencies` / fanout 9 / $25.4B blast radius
+- aave TVL drop / medium / `defillama_slug` / fanout 0 / $0 (no entity with that exact slug)
+
+Booted dev on :3010 and curled each page:
+
+| Probe | Status | Cold | Warm (application-code per Next dev log) |
+|---|---|---|---|
+| `/alerts` | 200 | 833ms | **130ms** |
+| `/alerts/[USDC]` (70 affected + 10 similar) | 200 | 873ms | — |
+| `/alerts/[Chainlink]` (90 affected + 10 similar) | 200 | — | **198ms** |
+| `/alerts/[LayerZero]` (9 affected + 10 similar) | 200 | — | **134ms** |
+| `/alerts/[bad-uuid]` | 404 | — | 17ms |
+| `/alerts/[unknown-uuid]` | 404 | — | 68ms |
+| `/?pageSize=5` (new KPI card) | 200 | 15s | 437ms |
+
+Content verification via grep:
+- `/alerts` contains all 4 alerts; severity sort surfaces "critical" tokens before "high".
+- `/alerts/[USDC]` shows top-5 affected: Ether.fi Cash, JustLend, BlackRock BUIDL, Securitize, Ondo — matches `blast_radius DESC` ground truth.
+- `/alerts/[USDC]` similar-exposure panel surfaces Ether.fi / Ethena (USDe) / Usual Money (overlap=2 each via Chainlink+Pyth or Chainlink+RedStone).
+- `/alerts/[Chainlink]` similar-exposure surfaces Curve Finance (overlap=5), Pendle / JustLend / Jupiter (overlap=3) — exactly what Method B should return for a Chainlink alert measured over `stablecoin_dependencies`.
+- `/?pageSize=5` shows "Alerts (24h)" KPI label and "critical — view contagion →" sub-text (2 of the 4 synthetic alerts were within the 24h window).
+
+The 198ms application-code on the Chainlink page (90 affected + 10 Method-B similar = 100 entities + JSON over the wire) satisfies the spec's "< 200ms fanout query for any dependency_key" gate. The 15s cold compile for `/` is Turbopack's first-touch cost on a route with many new dependencies (SiteHeader, FilterBar, EntitiesTable, EntityDrawer); warm subsequent hits land in 437ms.
+
+After the smoke, deleted all 4 synthetic alerts:
+```sql
+DELETE FROM chaindrain.alert WHERE raw_signal->>'source' = 'phase4-smoke';
+```
+`chaindrain.alert` is back to 0 rows in prod (matches the empty state the deployed UI will show on first user visit). The user can re-seed via the SQL block in AI_CONTEXT.md §8 for a populated demo, or wait for the cron to start producing real alerts (which still requires `CRON_SECRET` in Vercel — see §8 carryover).
+
+### Files created
+- `apps/mvp/src/app/alerts/page.tsx`
+- `apps/mvp/src/app/alerts/[alert_id]/page.tsx`
+- `apps/mvp/src/components/site-header.tsx`
+- `apps/mvp/src/components/alerts-filter-bar.tsx`
+- `apps/mvp/src/components/alerts-table.tsx`
+- `apps/mvp/src/components/alert-header.tsx`
+- `apps/mvp/src/components/affected-entities-table.tsx`
+- `apps/mvp/src/components/similar-exposure-panel.tsx`
+
+### Files modified
+- `apps/mvp/src/lib/db/queries.ts` — Phase 4 query surface: `listAlerts`, `getAlertById`, `getAffectedEntities`, `getSimilarExposure`, `defaultSimilarVia`, `SIMILAR_VIA_FIELDS`; re-exported `AlertSeverity` / `AlertSignalType` / `DependencyField`; `getKpiSummary` extended with `alerts_24h` + `alerts_24h_critical`.
+- `apps/mvp/src/lib/api/schemas.ts` — `SIGNAL_TYPES`, `SEVERITIES`, `ALERT_SORT_FIELDS`, `alertsQuerySchema`, `alertIdParamsSchema`.
+- `apps/mvp/src/lib/utils.ts` — `severityClass`, `signalTypeLabel`, `dependencyFieldLabel`, `formatDateTime`, `formatRelativeTime`.
+- `apps/mvp/src/components/kpi-cards.tsx` — swap 4th card to "Alerts (24h)" with link to `/alerts`.
+- `apps/mvp/src/app/page.tsx` — replace inline header with `<SiteHeader>`.
+- `docs/AI_CONTEXT.md` — flipped Phase 4 to DONE; rewrote §3 inventory, §7 Phase 4, §8 handoff to Phase 5.
+- `docs/DECISIONS.md` — added §24 (Method B query parameterization + `similarVia` discriminator + `IN-vs-ANY` rewrite).
+- `docs/CHANGELOG_DEV.md` — this entry.
+
+### Pending (manual user)
+1. Push the Phase 4 commit → Vercel auto-deploys `chaindrain-mvp`. Smoke `https://chaindrain-mvp.vercel.app/alerts` — expect "No alerts in the last 7 days." until the cron produces alerts.
+2. **Carried over from Phase 3 (still outstanding):** set `CRON_SECRET` in Vercel `chaindrain-mvp` env vars + GitHub repo secrets, confirm `ETHERSCAN_API_KEY` in Vercel Preview, set Ignored Build Step on both Vercel projects. See AI_CONTEXT §8 + §9.
+3. Optional: seed synthetic alerts via the SQL block in AI_CONTEXT §8 to demo the populated `/alerts` UI on prod immediately.
+
+### Commits
+- (pending) `phase 4: FAN OUT leg — /alerts index + /alerts/[id] contagion view + Method B similar exposure`
+
+### Next steps
+**Phase 5 — Daily digest.** Per `docs/AI_CONTEXT.md` §7 Phase 5 and `chaindrain_export/CURSOR_PROMPT.md` "PHASE 5": `src/app/api/cron/digest/route.ts` runs `0 9 * * *` daily via Vercel Cron (daily schedule is Hobby-compatible). Pull last-24h alerts via `listAlerts({ windowDays: 1, sortField: 'severity', sortDirection: 'asc' })`. For each critical, fetch top-5 affected via `getAffectedEntities(field, key, { limit: 5 })`. Plain HTML email via Resend SDK, subject `Chaindrain Daily — N critical / M high alerts`, 3 lines per alert. Recreate `apps/mvp/vercel.json` with only the daily cron entry (NOT the 5-min — that stays on GitHub Actions). Env: `RESEND_API_KEY`, `DIGEST_RECIPIENTS`. Tag `v0.1.0` once all 6 done-criteria boxes from CURSOR_PROMPT.md "Done criteria for the whole MVP" are green.
+
+---
+
 ## 2026-05-16 (PM #6) — Fix Phase 3 deploy failure: GitHub Actions cron + CI cleanup + project routing
 
 ### Session goals

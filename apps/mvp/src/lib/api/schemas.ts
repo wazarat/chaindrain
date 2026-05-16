@@ -61,6 +61,40 @@ export const entityIdParamsSchema = z.object({
   entity_id: z.string().uuid(),
 });
 
+export const SIGNAL_TYPES = [
+  "stablecoin_depeg",
+  "oracle_deviation",
+  "bridge_pause",
+  "admin_tx",
+  "tvl_drop",
+] as const;
+
+export const SEVERITIES = ["critical", "high", "medium", "low"] as const;
+
+export const ALERT_SORT_FIELDS = [
+  "detected_at",
+  "severity",
+  "fanout_tvl_usd",
+  "fanout_count",
+] as const;
+
+export const alertsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(ALERT_SORT_FIELDS).default("detected_at"),
+  direction: z.enum(SORT_DIRECTIONS).default("desc"),
+  windowDays: z.coerce.number().int().min(1).max(90).default(7),
+  signalTypes: csvEnumList(SIGNAL_TYPES),
+  severities: csvEnumList(SEVERITIES),
+});
+
+export type AlertsQueryInput = z.input<typeof alertsQuerySchema>;
+export type AlertsQuery = z.output<typeof alertsQuerySchema>;
+
+export const alertIdParamsSchema = z.object({
+  alert_id: z.string().uuid(),
+});
+
 export function parseSearchParams(
   searchParams: URLSearchParams,
 ): Record<string, string | string[]> {

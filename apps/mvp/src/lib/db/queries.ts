@@ -7,6 +7,8 @@ import {
 } from "../pollers/types";
 import type { AdminWatchEntity } from "../pollers/admin-tx";
 
+export type { AlertSeverity, AlertSignalType, DependencyField } from "../pollers/types";
+
 export type RiskTier = "critical" | "high" | "medium" | "low";
 export type CoverageTier = "core" | "monitored" | "archive" | "excluded";
 
@@ -99,6 +101,8 @@ export interface KpiSummary {
   high_count: number;
   total_tvl_usd: string;
   total_blast_radius_usd: string;
+  alerts_24h: number;
+  alerts_24h_critical: number;
 }
 
 export interface FilterOptions {
@@ -135,30 +139,43 @@ export async function countIdentities(): Promise<number> {
 }
 
 export async function getKpiSummary(): Promise<KpiSummary> {
-  const rows = await sql<
-    {
-      total_entities: string;
-      critical_count: string;
-      high_count: string;
-      total_tvl_usd: string | null;
-      total_blast_radius_usd: string | null;
-    }[]
-  >`
-    SELECT
-      COUNT(*)::text                                                    AS total_entities,
-      COUNT(*) FILTER (WHERE risk_tier = 'critical')::text              AS critical_count,
-      COUNT(*) FILTER (WHERE risk_tier = 'high')::text                  AS high_count,
-      COALESCE(SUM(tvl_usd), 0)::text                                   AS total_tvl_usd,
-      COALESCE(SUM(blast_radius_usd), 0)::text                          AS total_blast_radius_usd
-    FROM chaindrain.mvp_master
-  `;
-  const r = rows[0];
+  const [entityRow, alertRow] = await Promise.all([
+    sql<
+      {
+        total_entities: string;
+        critical_count: string;
+        high_count: string;
+        total_tvl_usd: string | null;
+        total_blast_radius_usd: string | null;
+      }[]
+    >`
+      SELECT
+        COUNT(*)::text                                                    AS total_entities,
+        COUNT(*) FILTER (WHERE risk_tier = 'critical')::text              AS critical_count,
+        COUNT(*) FILTER (WHERE risk_tier = 'high')::text                  AS high_count,
+        COALESCE(SUM(tvl_usd), 0)::text                                   AS total_tvl_usd,
+        COALESCE(SUM(blast_radius_usd), 0)::text                          AS total_blast_radius_usd
+      FROM chaindrain.mvp_master
+    `,
+    sql<{ total: string; critical: string }[]>`
+      SELECT
+        COUNT(*)::text                                                AS total,
+        COUNT(*) FILTER (WHERE severity = 'critical')::text           AS critical
+      FROM chaindrain.alert
+      WHERE detected_at >= now() - INTERVAL '24 hours'
+    `,
+  ]);
+
+  const r = entityRow[0];
+  const a = alertRow[0];
   return {
     total_entities: Number(r?.total_entities ?? 0),
     critical_count: Number(r?.critical_count ?? 0),
     high_count: Number(r?.high_count ?? 0),
     total_tvl_usd: r?.total_tvl_usd ?? "0",
     total_blast_radius_usd: r?.total_blast_radius_usd ?? "0",
+    alerts_24h: Number(a?.total ?? 0),
+    alerts_24h_critical: Number(a?.critical ?? 0),
   };
 }
 
@@ -414,4 +431,282 @@ export async function getRecentAlertCount(
     WHERE detected_at >= now() - (${windowHours}::int * INTERVAL '1 hour')
   `;
   return Number(rows[0]?.count ?? 0);
+}
+
+export type AlertSortField =
+  | "detected_at"
+  | "severity"
+  | "fanout_tvl_usd"
+  | "fanout_count";
+
+export interface AlertListOptions {
+  windowDays: number;
+  signalTypes?: AlertSignalType[];
+  severities?: AlertSeverity[];
+  sortField: AlertSortField;
+  sortDirection: SortDirection;
+  page: number;
+  pageSize: number;
+}
+
+export interface AlertListResult {
+  rows: AlertRow[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+const ALERT_SORTABLE: Record<AlertSortField, string> = {
+  detected_at: "detected_at",
+  severity:
+    "CASE severity WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END",
+  fanout_tvl_usd: "fanout_tvl_usd",
+  fanout_count: "fanout_count",
+};
+
+function buildAlertWhere(opts: {
+  windowDays: number;
+  signalTypes?: AlertSignalType[];
+  severities?: AlertSeverity[];
+}) {
+  const clauses: ReturnType<typeof sql>[] = [];
+  clauses.push(
+    sql`detected_at >= now() - (${opts.windowDays}::int * INTERVAL '1 day')`,
+  );
+  if (opts.signalTypes && opts.signalTypes.length > 0) {
+    clauses.push(sql`signal_type = ANY(${opts.signalTypes}::text[])`);
+  }
+  if (opts.severities && opts.severities.length > 0) {
+    clauses.push(sql`severity = ANY(${opts.severities}::text[])`);
+  }
+  let combined = sql`WHERE ${clauses[0]}`;
+  for (let i = 1; i < clauses.length; i++) {
+    combined = sql`${combined} AND ${clauses[i]}`;
+  }
+  return combined;
+}
+
+export async function listAlerts(
+  options: AlertListOptions,
+): Promise<AlertListResult> {
+  const {
+    windowDays,
+    signalTypes,
+    severities,
+    sortField,
+    sortDirection,
+    page,
+    pageSize,
+  } = options;
+  const sortExpr = ALERT_SORTABLE[sortField] ?? ALERT_SORTABLE.detected_at;
+  const safeDirection: "ASC" | "DESC" =
+    sortDirection.toUpperCase() === "ASC" ? "ASC" : "DESC";
+  const safePage = Math.max(1, Math.floor(page));
+  const safePageSize = Math.max(1, Math.min(200, Math.floor(pageSize)));
+  const offset = (safePage - 1) * safePageSize;
+
+  const where = buildAlertWhere({ windowDays, signalTypes, severities });
+
+  const orderBy =
+    safeDirection === "DESC"
+      ? sql`ORDER BY ${sql.unsafe(sortExpr)} DESC NULLS LAST, detected_at DESC`
+      : sql`ORDER BY ${sql.unsafe(sortExpr)} ASC NULLS LAST, detected_at DESC`;
+
+  const rows = await sql<AlertRow[]>`
+    SELECT alert_id, detected_at,
+           signal_type, severity, dependency_key, dependency_field,
+           raw_signal, fanout_count, fanout_tvl_usd
+    FROM chaindrain.alert
+    ${where}
+    ${orderBy}
+    LIMIT ${safePageSize}
+    OFFSET ${offset}
+  `;
+
+  const totalRows = await sql<{ count: string }[]>`
+    SELECT COUNT(*)::text AS count
+    FROM chaindrain.alert
+    ${where}
+  `;
+
+  return {
+    rows,
+    total: Number(totalRows[0]?.count ?? 0),
+    page: safePage,
+    pageSize: safePageSize,
+  };
+}
+
+export async function getAlertById(alertId: string): Promise<AlertRow | null> {
+  const rows = await sql<AlertRow[]>`
+    SELECT alert_id, detected_at,
+           signal_type, severity, dependency_key, dependency_field,
+           raw_signal, fanout_count, fanout_tvl_usd
+    FROM chaindrain.alert
+    WHERE alert_id = ${alertId}
+    LIMIT 1
+  `;
+  return rows[0] ?? null;
+}
+
+export interface AffectedEntityRow extends EntityRow {
+  defillama_slug: string | null;
+  admin_address: string | null;
+}
+
+export async function getAffectedEntities(
+  dependency_field: DependencyField,
+  dependency_key: string,
+  options: { limit?: number } = {},
+): Promise<AffectedEntityRow[]> {
+  const limit = Math.max(1, Math.min(500, options.limit ?? 100));
+  if (ARRAY_DEPENDENCY_FIELDS.has(dependency_field)) {
+    return await sql<AffectedEntityRow[]>`
+      SELECT
+        entity_id, name, sector, tvl_usd, risk_score, risk_tier, coverage_tier,
+        blast_radius_usd, oracle_providers, bridge_dependencies,
+        stablecoin_dependencies, chain_deployments, state,
+        defillama_slug, admin_address
+      FROM chaindrain.mvp_master
+      WHERE ${sql(dependency_field)} && ARRAY[${dependency_key}]::text[]
+      ORDER BY blast_radius_usd DESC NULLS LAST, risk_score DESC NULLS LAST, name ASC
+      LIMIT ${limit}
+    `;
+  }
+  return await sql<AffectedEntityRow[]>`
+    SELECT
+      entity_id, name, sector, tvl_usd, risk_score, risk_tier, coverage_tier,
+      blast_radius_usd, oracle_providers, bridge_dependencies,
+      stablecoin_dependencies, chain_deployments, state,
+      defillama_slug, admin_address
+    FROM chaindrain.mvp_master
+    WHERE ${sql(dependency_field)} = ${dependency_key}
+    ORDER BY blast_radius_usd DESC NULLS LAST, risk_score DESC NULLS LAST, name ASC
+    LIMIT ${limit}
+  `;
+}
+
+export type SimilarExposureField =
+  | "oracle_providers"
+  | "bridge_dependencies"
+  | "stablecoin_dependencies";
+
+export const SIMILAR_VIA_FIELDS: ReadonlySet<SimilarExposureField> = new Set([
+  "oracle_providers",
+  "bridge_dependencies",
+  "stablecoin_dependencies",
+]);
+
+export function defaultSimilarVia(
+  dependency_field: DependencyField,
+): SimilarExposureField {
+  if (dependency_field === "oracle_providers") return "stablecoin_dependencies";
+  return "oracle_providers";
+}
+
+export interface SimilarExposureRow {
+  entity_id: string;
+  name: string;
+  sector: string | null;
+  tvl_usd: string | null;
+  risk_score: string | null;
+  risk_tier: string | null;
+  blast_radius_usd: string | null;
+  overlap_score: number;
+  overlap_members: string[];
+}
+
+export async function getSimilarExposure(
+  dependency_field: DependencyField,
+  dependency_key: string,
+  options: { similarVia?: SimilarExposureField; limit?: number } = {},
+): Promise<SimilarExposureRow[]> {
+  const similarVia =
+    options.similarVia && SIMILAR_VIA_FIELDS.has(options.similarVia)
+      ? options.similarVia
+      : defaultSimilarVia(dependency_field);
+  const limit = Math.max(1, Math.min(50, options.limit ?? 10));
+
+  const isArrayField = ARRAY_DEPENDENCY_FIELDS.has(dependency_field);
+
+  if (similarVia === dependency_field) {
+    return [];
+  }
+
+  type Row = {
+    entity_id: string;
+    name: string;
+    sector: string | null;
+    tvl_usd: string | null;
+    risk_score: string | null;
+    risk_tier: string | null;
+    blast_radius_usd: string | null;
+    overlap_score: string;
+    overlap_members: string[];
+  };
+
+  const affectedPredicate = isArrayField
+    ? sql`${sql(dependency_field)} && ARRAY[${dependency_key}]::text[]`
+    : sql`${sql(dependency_field)} = ${dependency_key}`;
+
+  const notAffectedPredicate = isArrayField
+    ? sql`NOT (e.${sql(dependency_field)} && ARRAY[${dependency_key}]::text[])`
+    : sql`e.${sql(dependency_field)} IS DISTINCT FROM ${dependency_key}`;
+
+  const rows = await sql<Row[]>`
+    WITH affected AS (
+      SELECT ${sql(similarVia)} AS via_arr
+      FROM chaindrain.mvp_master
+      WHERE ${affectedPredicate}
+        AND ${sql(similarVia)} IS NOT NULL
+    ),
+    exposure AS (
+      SELECT DISTINCT member
+      FROM affected, unnest(via_arr) AS member
+      WHERE member IS NOT NULL AND member <> ''
+    ),
+    exposure_arr AS (
+      SELECT COALESCE(array_agg(member), ARRAY[]::text[]) AS members
+      FROM exposure
+    )
+    SELECT
+      e.entity_id,
+      e.name,
+      e.sector,
+      e.tvl_usd,
+      e.risk_score,
+      e.risk_tier,
+      e.blast_radius_usd,
+      (
+        SELECT count(*)::text
+        FROM unnest(e.${sql(similarVia)}) m
+        WHERE m IN (SELECT member FROM exposure)
+      ) AS overlap_score,
+      (
+        SELECT COALESCE(array_agg(DISTINCT m), ARRAY[]::text[])
+        FROM unnest(e.${sql(similarVia)}) m
+        WHERE m IN (SELECT member FROM exposure)
+      ) AS overlap_members
+    FROM chaindrain.mvp_master e
+    WHERE ${notAffectedPredicate}
+      AND e.${sql(similarVia)} && (SELECT members FROM exposure_arr)
+      AND EXISTS (SELECT 1 FROM exposure)
+    ORDER BY overlap_score DESC NULLS LAST,
+             e.blast_radius_usd DESC NULLS LAST,
+             e.risk_score DESC NULLS LAST,
+             e.name ASC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((r) => ({
+    entity_id: r.entity_id,
+    name: r.name,
+    sector: r.sector,
+    tvl_usd: r.tvl_usd,
+    risk_score: r.risk_score,
+    risk_tier: r.risk_tier,
+    blast_radius_usd: r.blast_radius_usd,
+    overlap_score: Number(r.overlap_score ?? 0),
+    overlap_members: r.overlap_members ?? [],
+  }));
 }
