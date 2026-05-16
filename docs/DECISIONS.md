@@ -132,3 +132,54 @@ If the GitHub integration is ever desired, it would need a per-app Fly-side "sou
 Dev still works because local `apps/api/.env` keeps `ALLOWED_ORIGINS=http://localhost:3000`.
 
 **See:** `apps/api/app/main.py` `CORSMiddleware` block, `apps/api/app/config.py:cors_origins`, prod Fly secret `ALLOWED_ORIGINS`.
+
+**Status (2026-05-16):** Decision moot. `apps/api` was destroyed in Phase 0 of the MVP rebuild; the MVP has no FastAPI surface and no CORS rules to maintain. See §13.
+
+---
+
+## 12. MVP rebuild stack lock — Next.js + Drizzle, no FastAPI
+
+**Decision (2026-05-16, Phase 0):** the new MVP stack is **Next.js 15 (stable) App Router + TypeScript + Tailwind + supabase-js + Drizzle ORM + Vercel**. Nothing else. No FastAPI, no Python, no Fly, no auth, no charting library beyond Recharts (only if a Phase 5 stretch goal needs it).
+
+**Rationale:** the MVP scope spec ([chaindrain_export/data/mvp_scope_spec.md](../../../Downloads/chaindrain_export/data/mvp_scope_spec.md)) explicitly defines three legs (Score / Detect / Fan Out) with a daily digest. The previous architecture had a custom FastAPI + Python Comet agent + Edge Function cron trigger — three deploy targets and three runtime languages. Vercel + Supabase + Drizzle covers the same surface with **one runtime, one deploy, one ORM**, and the spec's explicit "do NOT build" list (auth, multi-tenant, custom UI design system, alert replay, LLM reasoning, Slack/Discord) keeps scope tight.
+
+The MVP lives in a new `apps/mvp/` directory; the legacy `apps/web/` stays frozen until Phase 1 verifies the rebuild is green, then it's deleted in a Phase 6 cleanup.
+
+**See:** `apps/mvp/` (Phase 1+), [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) for the canonical phased build instructions.
+
+---
+
+## 13. Decommission FastAPI + Comet agent + cron-trigger Edge Function
+
+**Decision (2026-05-16, Phase 0):** destroyed `chaindrain-api` and `chaindrain-agent` Fly apps and removed `apps/api/`, `apps/agent/`, `supabase/functions/cron-trigger/` from the repo. Pg_cron jobs `chaindrain_daily_agent` and `chaindrain_refresh_matrix` unscheduled.
+
+**Rationale:** they're not in the new stack (§12). Hard cut prevents drift between two parallel architectures and resolves the "rotate leaked SUPABASE_SERVICE_ROLE_KEY + AGENT_HMAC_SECRET" follow-up trivially — the consumers of those secrets are gone.
+
+The only thing kept warm is the legacy `chaindrain.vercel.app` deploy of `apps/web/` — frozen, but live, as a rollback parachute until Phase 5 ships green.
+
+**See:** `docs/CHANGELOG_DEV.md` 2026-05-16 entry, `supabase/migrations/20260516000000_drop_legacy_public.sql`.
+
+---
+
+## 14. Single-tenant, IP-allowlisted, no auth in v1
+
+**Decision (2026-05-16, Phase 0):** the MVP has no user accounts, no profiles, no watchlists. Access control is a Vercel IP allowlist on the deployment. No `supabase auth`, no JWT verification, no RLS policies on `chaindrain.*` tables (instead: SELECT granted to `anon` + `authenticated`, ALL to `service_role`).
+
+**Rationale:** explicit spec choice from [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md): "no auth in v1 (single-tenant tool)." Auth was the second-largest source of complexity in the legacy `apps/web` (signup trigger, admin_grant function, RLS policies, JWKS verification). v1 doesn't need it. If the product grows past one tenant, auth becomes a Phase 6+ project.
+
+**See:** `supabase/migrations/20260516000200_chaindrain_grants.sql`, [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "What to NOT build" section.
+
+---
+
+## 15. entity_id collision: regenerate UUIDs, preserve 875-row spec
+
+**Decision (2026-05-16, Phase 0):** when loading `chaindrain_export/data/entities_final.json`, 7 pairs of records share the same `entity_id` (UUIDv5 normalized whitespace in names — e.g. `'StarkEx (...)'` vs `'StarkEx\n(...)'`). For each colliding pair, the loader keeps the first occurrence's `entity_id` as-is and assigns a new SHA-1-derived UUIDv5 (`{original_uuid}|{name}|{key}` as the seed) to the second occurrence.
+
+**Rationale:**
+- The spec, the README's verification steps, and the `/api/health` smoke test all reference **875 entities**. Dedup-by-collision would land at 868, breaking the smoke test and the user's expectation.
+- The pairs are functionally distinct (different `name` and `key`), just incidentally collapsed by the export's UUID-derivation rule. Preserving them is closer to the source spreadsheet's intent than dedup.
+- The new UUIDs are deterministic given the same input, so re-running `scripts/load_seed.mjs` produces stable IDs.
+
+The bundled SQL (`02_seed.sql`) doesn't apply this fix and so cannot be used as a Postgres migration — it would error on `duplicate key value violates unique constraint "identity_pkey"`. The migration that would have copied that file in was deleted in favor of the JSON loader path. See `scripts/load_seed.mjs`.
+
+**See:** `scripts/load_seed.mjs:deriveUuid`, `chaindrain_export/data/entities_final.json`.

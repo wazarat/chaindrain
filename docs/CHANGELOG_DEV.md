@@ -234,6 +234,106 @@ None yet this session — the changes are doc-only and a database state mutation
 
 ---
 
+## 2026-05-16 — Phase 0: hard-cut to MVP rebuild, 875-entity chaindrain.* schema loaded
+
+### Session goals
+1. Decommission legacy FastAPI (`chaindrain-api.fly.dev`) + Comet agent (`chaindrain-agent.fly.dev`).
+2. Remove `apps/api/`, `apps/agent/`, legacy importer scripts, and Supabase Edge Function from the repo.
+3. Drop the entire `public.*` schema (events / companies / sectors / profiles / watchlists / agent_runs / triggers / RLS funcs / pg_cron jobs).
+4. Load the 875-entity `chaindrain.*` schema from the `chaindrain_export/` bundle.
+5. Verify Top-5 risk scores match the spec (RealT 0.853 etc.).
+
+### What was done
+
+#### a. Fly apps destroyed
+- `flyctl apps destroy chaindrain-agent --yes` → "Destroyed app chaindrain-agent".
+- `flyctl apps destroy chaindrain-api --yes` → "Destroyed app chaindrain-api".
+- Both apps were `suspended` so destruction released their secrets (incl. the leaked `SUPABASE_SERVICE_ROLE_KEY` + `AGENT_HMAC_SECRET` flagged in the prior session's open follow-ups). Service-role rotation is now moot — the consumers are gone.
+
+#### b. Repo prune
+Deleted from the working tree:
+- `apps/api/` (FastAPI) and `apps/agent/` (Comet/Playwright Python agent).
+- `supabase/functions/cron-trigger/` (Edge Function — Vercel Cron will replace).
+- Legacy importers under `scripts/`: `import_companies.py`, `import_from_google_sheets.py`, `sheets_to_sql.py`, `sheets_map.py`, `companies_seed.sql`, `companies_seed_batches/`, `post_synthetic_event.py`.
+- `data/companies/*.csv` (36 sheets that fed the legacy 499-company catalog).
+
+Kept: `scripts/rls_audit.sql` (reference only).
+
+#### c. Drop legacy public.* — migration `20260516000000_drop_legacy_public.sql`
+Single migration that:
+- Unschedules `chaindrain_daily_agent` (13:00 UTC) and `chaindrain_refresh_matrix` (every 10 min) pg_cron jobs.
+- `DROP MATERIALIZED VIEW public.mv_threat_matrix`, `DROP VIEW public.v_threat_components`.
+- `DROP TABLE` for: `notifications`, `watchlists`, `event_companies`, `event_sources`, `events`, `sector_signals`, `companies`, `subsectors`, `sectors`, `profiles`, `agent_runs` (FK-safe order).
+- `DROP FUNCTION` for: `admin_grant`, `is_admin`, `handle_new_user`, `refresh_threat_matrix`, `detect_sector_signal(uuid,integer,integer)`, `rls_audit`, `event_subsector_id`, all `tg_*` triggers, all `search_events` overloads (resolved via dynamic plpgsql loop on `pg_proc`).
+- `DROP TYPE` for the 3 legacy enums (`evidence_class`, `event_severity`, `event_status`).
+
+`auth.*` left untouched (Supabase managed). Extensions `vector`, `pg_trgm`, `pg_net` kept (still useful).
+
+After apply: `information_schema.tables WHERE table_schema='public' AND table_type='BASE TABLE'` returns 0 rows. ✓
+
+#### d. Create chaindrain.* — migration `20260516000100_chaindrain_schema.sql`
+Verbatim copy of [chaindrain_export/sql/01_schema.sql](../../../Downloads/chaindrain_export/sql/01_schema.sql). Defines:
+- `chaindrain.identity` (13 cols, 4 indexes including GIN on `chain_deployments`)
+- `chaindrain.contract_fingerprint` (22 cols, 5 indexes)
+- `chaindrain.dependency_fingerprint` (10 cols, 4 indexes including GIN on `oracle_providers` / `bridge_dependencies` / `stablecoin_dependencies`)
+- `chaindrain.tier_state` (11 cols, 4 indexes)
+- `chaindrain.mvp_master` (view joining all four on `entity_id`)
+
+#### e. Grant access — migration `20260516000200_chaindrain_grants.sql`
+`anon` + `authenticated` get `SELECT` on all chaindrain.* tables; `service_role` gets ALL. `ALTER DEFAULT PRIVILEGES` so future tables in this schema inherit the same. (Replaces a deleted `..._chaindrain_seed.sql` migration that was a 626 KB copy of the export's seed — the bundled SQL has 7 duplicate-PK rows that violate the table constraint, so the file is unusable as-is.)
+
+#### f. JSON-based seed loader — `scripts/load_seed.mjs`
+The `chaindrain_export/sql/02_seed.sql` file ships 7 colliding `entity_id`s (UUIDv5 normalized whitespace in names like `'StarkEx (...)'` vs `'StarkEx\n(...)'`), so it cannot be applied as-is. Built a Node loader that:
+- Reads `chaindrain_export/data/entities_final.json` (875 records).
+- Detects the 7 collisions and assigns deterministic SHA-1-derived UUIDv5 to the second occurrences (so we land at exactly 875 distinct entity_ids per the spec).
+- Inserts in 4 batched waves (200/batch, FK-safe): identity → contract_fingerprint → dependency_fingerprint → tier_state.
+- Uses `postgres` npm client over the `aws-1-us-east-1.pooler.supabase.com:5432` session-mode pooler (the older `aws-0-...` host returns "Tenant or user not found" for new projects).
+- TRUNCATEs first so the script is idempotent.
+
+Run time: 1.5 s for the full load. Final counts: 875 × 4 = 3,500 rows + 875 in `mvp_master`. ✓
+
+#### g. Spot-check vs spec
+| name | risk_score (db) | risk_tier | spec |
+|---|---|---|---|
+| RealT | 0.8532 | critical | 0.853 ✓ |
+| Arbitrum Bridge | 0.8074 | critical | 0.807 ✓ |
+| Binance | 0.8032 | critical | 0.803 ✓ |
+
+Spec's "Binance (Wallet / DEX / Exchange)" is split across 3 separate Binance variants in the JSON (Binance / Binance Validator Operations / Binance On-Ramp). All three at risk_score 0.8032 — same value, different rows. Acceptable.
+
+#### h. Pending manual step (flagged for user)
+**Expose `chaindrain` schema in Supabase API settings.** PostgREST currently returns `PGRST106 Invalid schema: chaindrain`. Required only if a client wants to read via `supabase-js` over PostgREST; the MVP renders server-side via Drizzle/postgres so this is optional. Path: Supabase Dashboard → Project Settings → API → Exposed schemas → add `chaindrain`.
+
+### Files created
+- `supabase/migrations/20260516000000_drop_legacy_public.sql`
+- `supabase/migrations/20260516000100_chaindrain_schema.sql` (copy of export bundle)
+- `supabase/migrations/20260516000200_chaindrain_grants.sql`
+- `scripts/load_seed.mjs`
+- `scripts/package.json`, `scripts/package-lock.json` (for `postgres` client)
+
+### Files deleted
+- `apps/api/` (entire FastAPI service)
+- `apps/agent/` (entire Comet agent)
+- `supabase/functions/cron-trigger/`
+- `data/companies/*.csv` (36 files)
+- `scripts/{import_companies,import_from_google_sheets,sheets_to_sql,sheets_map,post_synthetic_event}.py`
+- `scripts/companies_seed.sql`, `scripts/companies_seed_batches/`
+- (Note: `apps/web/` is intentionally kept frozen until Phase 1 verifies the MVP rebuild ships green; will be removed in a Phase 6 cleanup.)
+
+### Files modified
+- `apps/web/.env.local` — added `DATABASE_URL` + `DATABASE_URL_SESSION` for Drizzle introspect in Phase 1, fixed a host typo (`ufthyyndcmztfgqltyjao` → `uftbynydcmzfggltyjao`).
+- `docs/AI_CONTEXT.md` — full rewrite for the post-pivot world.
+- `docs/CHANGELOG_DEV.md` — this entry.
+- `docs/DECISIONS.md` — added §12 (Drizzle), §13 (no Fly), §14 (single-tenant no auth), §15 (entity_id collision regeneration).
+
+### Commits
+- (pending) `phase 0: decommission legacy fly + public.*, load 875-entity chaindrain.* schema`
+
+### Next steps (Phase 1)
+Bootstrap `apps/mvp` per [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "PHASE 1": `pnpm create next-app@latest mvp` → Drizzle introspect → `/api/health` returning `{ ok: true, count: 875 }` → Vercel deploy to `chaindrain-mvp.vercel.app`.
+
+---
+
 ## 2026-05-15 (PM #2) — Day 3: chaindrain-agent live, trigger path verified, daily cron scheduled
 
 ### Session goals

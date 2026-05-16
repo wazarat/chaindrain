@@ -1,0 +1,13 @@
+{
+  "name": "@chaindrain/scripts",
+  "version": "0.1.0",
+  "description": "One-shot scripts (seed loader, etc.) outside the pnpm workspace.",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node load_seed.mjs"
+  },
+  "dependencies": {
+    "postgres": "^3.4.9"
+  }
+}
