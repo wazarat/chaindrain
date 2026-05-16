@@ -10,6 +10,78 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #8) — Phase 4 prod activation: CRON_SECRET set, first real alerts populated, /alerts copy fix
+
+### Session goals
+Close the Phase 3 prod-config gap (CRON_SECRET unset in Vercel + GitHub) so the GitHub Actions cron can fire `POST /api/cron/poll`, then smoke the populated Phase 4 UI in prod (`/alerts` index + `/alerts/[id]` contagion view + Method B panel) with real signals instead of synthetic ones.
+
+### Pre-flight (live prod, before secret was set)
+- Phase 4 commit `e6fbcbc` deployed (`Vercel – chaindrain-mvp: success` ~ 1 min build).
+- First curl `/api/health` was a 52s cold start (`200 {"ok":true,"count":875}`), subsequent concurrent calls hung until function warmed. After warm: `200` in 754ms via `yul1::iad1::x8dw9-…` — confirming the new bundle and shared deps work in prod.
+- Browser-driven smoke of `/` confirmed Phase 4 SiteHeader + KPI rewire (4th card "Alerts (24h): 0 from the DETECT poller suite — view all →").
+- Browser-driven smoke of `/alerts` (cold + filtered with `?windowDays=30&sort=severity&direction=desc&signalTypes=stablecoin_depeg,oracle_deviation`) confirmed the index renders, the segmented time-window control switches subtitle copy, MultiSelect renders "2 selected" + a "Clear all" pill when any non-default filter is active.
+- `/alerts/<valid-uuid-missing>` → Next.js 404 via `notFound()`. `/alerts/not-a-uuid` → Zod-reject → Next.js 404. Both routes confirmed.
+
+### What was done
+
+#### a. Secret rotation + provisioning
+- Generated `e54a40ebde72b0115802784c9b2ea1d1a5b62881d8a64731b59ff66c6d27f00f` (32-byte hex via `openssl rand -hex 32`).
+- User pasted into `Vercel → chaindrain-mvp → Settings → Env Vars → CRON_SECRET (Production)` then redeployed `e6fbcbc` so the function picks up the var at runtime.
+- User pasted same value into `github.com/wazarat/chaindrain → Settings → Secrets → Actions → CRON_SECRET`.
+
+#### b. Manual cron-fire to prove the path end-to-end (without waiting for the `*/5` GitHub-scheduled tick)
+```bash
+curl -sS --max-time 90 -X POST \
+  -H "Authorization: Bearer e54a40eb…f00f" \
+  -o /tmp/poll.json -w "%{http_code}  %{time_total}s\n" \
+  https://chaindrain-mvp.vercel.app/api/cron/poll
+# → 200  6.190168s
+```
+
+Returned `{ok:true, summary:{...}}`. Per-poller breakdown:
+| Poller | alerts_emitted | alerts_persisted | elapsed_ms |
+|---|---|---|---|
+| stablecoin_depeg | 0 | 0 | 157 |
+| oracle_deviation | 0 | 0 | 3604 |
+| bridge_pause | 0 | 0 | 1319 |
+| admin_tx | 0 | 0 | 5476 |
+| **tvl_drop** | **2** | **2** | **640** |
+
+Two real DefiLlama TVL-drop alerts persisted to `chaindrain.alert`:
+1. **Liquity V2** (`liquity-v2`, defillama_slug) — `change_1d_pct = -24.55%`, severity=high, fanout_count=3, fanout_tvl=$243,246,950.46. alert_id `2c40c2ed-72a7-4444-9df0-01c4c388907c`.
+2. **CEX.IO** (`cex.io`) — `change_1d_pct = -21.03%`, severity=high, fanout_count=1, fanout_tvl=$8,098,510.00. alert_id `a9fbcaca-d424-4809-b0bb-cdfb32eb0993`.
+
+#### c. Populated `/alerts` smoke in prod (browser)
+- `/alerts` → "Showing 1–2 of 2 alerts (last 7 days)" with both rows: `just now · May 16, 2026, 12:53 PM EDT`, High severity pill, "TVL drop" signal, `cex.io DefiLlama slug` / `liquity-v2 DefiLlama slug` dependency cells.
+- Clicked into Liquity V2 (`/alerts/2c40c2ed-…`):
+  - Header: HIGH pill / TVL DROP label / title `liquity-v2 DefiLlama slug` / Fanout count card = **3** / Blast radius card = **$243.2M** / Raw signal JSON block with `tvl_usd: 80501242.74`, `change_1d_pct: -24.55…`, `protocol_name: "Liquity V2"`, thresholds.
+  - **Affected entities** table: 3 rows, all in the Liquity family — `Liquity` (Lending/CDPs), `Liquity (LUSD)` (Stablecoin Issuers), `Liquity (V1)` (Lending/CDPs) — each TVL $81.1M, risk 0.4036, tier Medium. Pink chip "DefiLlama slug: liquity-v2" on header.
+  - **Similar exposure** (Method B via `oracle_providers`, default for `dependency_field=defillama_slug`): 10 rows — Binance/Coinbase Validator Operations, Ether.fi / Ether.fi Cash / Ether.fi (restaking layer), Ethena (USDe), Babylon, BlackRock BUIDL, Securitize, Circle Internet Financial. Footer surfaces `Affected query: chaindrain.mvp_master · similar exposure via oracle_providers`.
+
+#### d. Copy bug spotted + fixed
+- `affected-entities-table.tsx` had `${rows.length.toLocaleString()} entity${rows.length === 1 ? "" : "ies"} depend on this ...` which produces `3 entityies depend on this defillama slug` (wrong stem split) and `1 entity depend` (wrong verb agreement).
+- Fixed to `${count} ${count === 1 ? "entity depends" : "entities depend"} on this ${field} — ordered by blast radius.`
+- `pnpm --filter @chaindrain/mvp typecheck` ✓, `lint` ✓ (no warnings), `test` ✓ (29/29 in 381ms).
+
+#### e. GitHub Actions cron status
+- Workflow `cron-poll-signals` (id=277927446) is `active`, on main since commit `a612e87`.
+- At PM #8 commit time: `total_count: 0` runs. GH-hosted scheduled crons are best-effort and on weekend load can lag 5–30 min before the first tick fires. Manual `workflow_dispatch` from the GitHub UI confirms it immediately if needed. The route + auth path is already proven via the direct curl in §b, so this is GH-runner-side verification only.
+
+### Files modified
+- `apps/mvp/src/components/affected-entities-table.tsx` — pluralization + verb fix
+- `docs/AI_CONTEXT.md` — flip PM #8 prod state in header, mark §8 items 1–2 DONE, bump alert row count from 0 to 2
+- `docs/CHANGELOG_DEV.md` — this entry
+
+### What's running in prod right now
+- `chaindrain-mvp` build: commit `e6fbcbc` then re-deploy after env-var set
+- `chaindrain.alert`: 2 real alerts as of the manual fire; will grow when the GitHub cron starts producing
+- Pollers: tvl_drop currently the only source emitting (Liquity V2 + CEX.IO genuinely lost >20% TVL on the day). Other 4 pollers ran cleanly but found nothing above thresholds (USDC/USDT in band, Chainlink/Pyth feeds within 1% of CoinGecko, LayerZero V2 endpoint not paused, no admin txs in last 5 min on top-100 entities). This is expected — alerts should be the exception, not the norm.
+
+### Next steps (Phase 5)
+- Phase 5: `src/app/api/cron/digest/route.ts` at `0 9 * * *` (daily — fits Vercel Hobby) via re-created `apps/mvp/vercel.json` with **only** the daily entry (5-min poll stays on GitHub Actions). Pull last-24h alerts via `listAlerts({ windowDays: 1, sortField: 'severity', sortDirection: 'asc' })`, top-5 affected per critical via `getAffectedEntities(field, key, { limit: 5 })`. Plain HTML body via Resend. Subject: `Chaindrain Daily — N critical / M high alerts`. Env: `RESEND_API_KEY`, `DIGEST_RECIPIENTS`.
+
+---
+
 ## 2026-05-16 (PM #7) — Phase 4: FAN OUT leg — /alerts index + /alerts/[id] contagion view + Method B similar-exposure panel
 
 ### Session goals

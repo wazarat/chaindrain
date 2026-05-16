@@ -40,9 +40,9 @@ export function AffectedEntitiesTable({
           <p className="text-xs text-zinc-500">
             {rows.length === 0
               ? "No entities in the catalog match this dependency."
-              : `${rows.length.toLocaleString()} entity${
-                  rows.length === 1 ? "" : "ies"
-                } depend on this ${dependencyFieldLabel(dependencyField).toLowerCase()} — ordered by blast radius.`}
+              : `${rows.length.toLocaleString()} ${
+                  rows.length === 1 ? "entity depends" : "entities depend"
+                } on this ${dependencyFieldLabel(dependencyField).toLowerCase()} — ordered by blast radius.`}
           </p>
         </div>
         <span className="inline-flex items-center gap-2 rounded-full bg-red-500/15 px-3 py-1 text-xs font-medium text-red-700 ring-1 ring-red-500/30 dark:bg-red-500/20 dark:text-red-300">

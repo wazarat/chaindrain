@@ -1,6 +1,6 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 4 DONE ✓ (locally)**. FAN OUT leg: `/alerts` index (7-day default, sortable by `severity` / `fanout_tvl_usd` / `fanout_count` / `detected_at`, with `signal_type` + `severity` + time-window filters) + `/alerts/[alert_id]` contagion view (alert header with raw_signal JSON + affected entities table ordered by `blast_radius_usd DESC` + Method B similar-exposure panel). All Phase 4 queries through `src/lib/db/queries.ts`: `listAlerts`, `getAlertById`, `getAffectedEntities`, `getSimilarExposure` (parameterized on `dependency_field` + `similarVia` — see DECISIONS §24). `getKpiSummary` now joins `chaindrain.alert` so the dashboard's 4th KPI card surfaces "Alerts (24h)" with a link to `/alerts`. Cross-page `<SiteHeader>` with active-tab nav. `pnpm typecheck/lint/build/test` (29 tests) all clean. Live E2E smoke (4 synthetic alerts seeded then cleaned up): Chainlink contagion page (90 affected entities + 10 Method B similar) renders in **198ms application-code** — under the 200ms spec budget. Ready for Phase 5 (daily digest via Resend). Phase 3 prod deploy still requires the user to set `CRON_SECRET` in Vercel before the GitHub Actions cron produces real alerts (see §8).
+**Last updated:** 2026-05-16 — **Phase 4 DONE ✓ AND LIVE IN PROD**. FAN OUT leg: `/alerts` index (7-day default, sortable by `severity` / `fanout_tvl_usd` / `fanout_count` / `detected_at`, with `signal_type` + `severity` + time-window filters) + `/alerts/[alert_id]` contagion view (alert header with raw_signal JSON + affected entities table ordered by `blast_radius_usd DESC` + Method B similar-exposure panel). All Phase 4 queries through `src/lib/db/queries.ts`: `listAlerts`, `getAlertById`, `getAffectedEntities`, `getSimilarExposure` (parameterized on `dependency_field` + `similarVia` — see DECISIONS §24). `getKpiSummary` now joins `chaindrain.alert` so the dashboard's 4th KPI card surfaces "Alerts (24h)" with a link to `/alerts`. Cross-page `<SiteHeader>` with active-tab nav. `pnpm typecheck/lint/build/test` (29 tests) all clean. **Production state (verified 2026-05-16 PM #8):** user set `CRON_SECRET` in Vercel + GitHub Actions repo secrets; first manual `POST /api/cron/poll` returned `200` in 6.2s and persisted **2 real TVL-drop alerts** to `chaindrain.alert` — Liquity V2 (-24.55% in 1d, fanout=3, blast=$243.2M) and CEX.IO (-21.03%, fanout=1, blast=$8.1M); both surfaced on `/alerts` index and `/alerts/[liquity-v2-id]` rendered the full contagion view (3 affected Liquity entities + 10 Method-B similar via `oracle_providers`: Binance/Coinbase Validator Operations, Ether.fi ×3, Ethena USDe, Babylon, BlackRock BUIDL, Securitize, Circle). One copy-bug discovered + fixed in the same session: `affected-entities-table.tsx` had `3 entityies depend on…` due to a broken `entity` + `y`/`ies` suffix split (now `3 entities depend` / `1 entity depends` with proper verb agreement). Ready for Phase 5 (daily digest via Resend).
 
 > **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
 
@@ -125,7 +125,7 @@ The `chaindrain_export/` bundle (in `~/Downloads/`) is the input dataset. Key fi
 | `chaindrain.dependency_fingerprint` | 875 | oracle_providers[], bridge_dependencies[], stablecoin_dependencies[], dvn_configuration + per-field `*_confidence` flags |
 | `chaindrain.tier_state` | 875 | risk_score, risk_tier (critical/high/medium/low), coverage_tier (core/monitored/archive/excluded), blast_radius_usd, state |
 | `chaindrain.mvp_master` (view) | 875 | All four joined on `entity_id` |
-| `chaindrain.alert` | 0 (live) | Phase 3 — alert_id pk, detected_at, signal_type (CHECK), severity (CHECK), dependency_key, dependency_field, raw_signal jsonb, fanout_count, fanout_tvl_usd. Indexes: idx_alert_detected (detected_at DESC), idx_alert_severity ((severity, detected_at DESC)). |
+| `chaindrain.alert` | 2 (live as of PM #8 first cron-fire; grows on every successful poll) | Phase 3 — alert_id pk, detected_at, signal_type (CHECK), severity (CHECK), dependency_key, dependency_field, raw_signal jsonb, fanout_count, fanout_tvl_usd. Indexes: idx_alert_detected (detected_at DESC), idx_alert_severity ((severity, detected_at DESC)). |
 
 **Indexes (already created):** GIN on `chain_deployments`, `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`. B-tree on `sector`, `tvl_usd DESC NULLS LAST`, `defillama_slug`, `proxy_pattern`, `upgrade_authority_type`, `audits_tier`, `admin_address`, `primary_contract_address`, `dvn_configuration`, `risk_tier`, `coverage_tier`, `risk_score DESC`, `state`.
 
@@ -242,26 +242,24 @@ Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5
 
 ## 8. Where the chat paused (handoff to Phase 5)
 
-**Phase 4 fully closed locally.** `/alerts` index + `/alerts/[alert_id]` contagion view + Method B similar-exposure panel + KPI rewire + cross-page nav. `pnpm typecheck/lint/build/test` all clean. End-to-end smoke proven on the live DB: 4 synthetic alerts seeded → all pages render → contagion warm ≤ 200ms application-code → synthetic alerts deleted (so the prod `chaindrain.alert` table is back to 0 rows).
+**Phase 4 fully closed AND live in prod.** `/alerts` index + `/alerts/[alert_id]` contagion view + Method B similar-exposure panel + KPI rewire + cross-page nav. `pnpm typecheck/lint/build/test` (29 tests) all clean. End-to-end prod smoke 2026-05-16 PM #8: pushed Phase 4 commit (`e6fbcbc`), `chaindrain-mvp` Vercel build green, user set `CRON_SECRET` to `e54a40ebde72b0115802784c9b2ea1d1a5b62881d8a64731b59ff66c6d27f00f` in both Vercel project (Production env, redeployed) and GitHub repo secrets, then manual `POST /api/cron/poll` with Bearer → `200` in 6.2s, persisting **2 real alerts** (Liquity V2 -24.55% / CEX.IO -21.03% — both DefiLlama TVL drops, high severity). Both visible on `/alerts` ("Showing 1–2 of 2 alerts (last 7 days)"); `/alerts/[liquity-v2-id]` renders the full contagion view in prod (3 affected Liquity entities + 10 Method-B similar via `oracle_providers`). Copy bug spotted + shipped same session: `affected-entities-table.tsx` `${count} entity${y/ies} depend` → `${count} entity depends | entities depend`.
 
-**Phase 3 still has open prod-config gaps (carried over from the previous handoff). The Phase 4 commit does not change any of this:**
-1. **`CRON_SECRET` not set in Vercel `chaindrain-mvp` env vars** (Production + Preview + Development). Value to use: `ebb216acc57724d8a9c29be22d9669e5b964707b318d176530cda535dec80846` (matches `apps/mvp/.env.local` and the value the user should put in GitHub repo secrets). Without it, `POST /api/cron/poll` returns 500 `cron_secret_not_configured` and the cron never produces alerts. **Verified at the start of the Phase 4 session via `curl -X POST https://chaindrain-mvp.vercel.app/api/cron/poll` → 500.**
-2. **`CRON_SECRET` not set in GitHub repo secrets** (Settings → Secrets and variables → Actions → New repository secret, name `CRON_SECRET`, same value). Without it, the workflow exits 1.
-3. **Confirm `ETHERSCAN_API_KEY` is set in Vercel Preview as well as Production.**
-4. **Set Ignored Build Step on both Vercel projects** so pushes touching `apps/web/` don't fire `chaindrain-mvp` builds and vice versa (see §9 below).
-5. **First successful cron fire** will produce rows in `chaindrain.alert`, which will then populate the new `/alerts` page on prod automatically. Until then, `/alerts` will render "No alerts in the last 7 days." and the dashboard KPI will show "0 alerts (24h)" — both empty-states are handled correctly.
+**Phase 3 prod-config gaps that are now CLOSED in PM #8:**
+1. ~~`CRON_SECRET` not set in Vercel `chaindrain-mvp`~~ → **DONE**. Set in Production env, redeployed. Value lives in `apps/mvp/.env.local` locally and as a GitHub repo secret remotely. (Older value `ebb216ac…0846` was a stale placeholder from a prior handoff doc; the current live value is `e54a40eb…f00f`.)
+2. ~~`CRON_SECRET` not set in GitHub repo secrets~~ → **DONE**. Same value as Vercel; `cron-poll-signals` workflow uses it via `${{ secrets.CRON_SECRET }}`.
+3. **First scheduled GitHub Actions cron run** — as of commit time the workflow had `total_count: 0` runs. GH-hosted scheduled crons typically lag 5–30 min on weekend load; manual `workflow_dispatch` from the GitHub UI confirms it immediately. The route side is already proven via the direct curl above, so this is just verifying the GH-runner path.
 
-**Quick prod-demo of Phase 4 without waiting for the cron:** if the user wants to see the live `/alerts` UI populated immediately after the Phase 4 deploy, seed synthetic alerts directly into prod Supabase via the MCP. The exact SQL used in the Phase 4 smoke was:
+**Phase 3 gaps still open (cosmetic / nice-to-have, not blocking):**
+4. **Confirm `ETHERSCAN_API_KEY` is set in Vercel Preview as well as Production.** (Production fine; preview only matters for branch deploys.)
+5. **Set Ignored Build Step on both Vercel projects** so pushes touching `apps/web/` don't fire `chaindrain-mvp` builds and vice versa (see §9 below).
 
-```sql
-INSERT INTO chaindrain.alert (alert_id, detected_at, signal_type, severity, dependency_key, dependency_field, raw_signal, fanout_count, fanout_tvl_usd)
-SELECT '00000000-0000-4000-a000-000000000001'::uuid, now() - interval '2 minutes', 'stablecoin_depeg', 'critical', 'USDC', 'stablecoin_dependencies',
-       '{"source":"phase4-demo","price":0.97,"deviation":0.03}'::jsonb,
-       COUNT(*)::int, COALESCE(SUM(blast_radius_usd),0)::numeric
-FROM chaindrain.mvp_master WHERE stablecoin_dependencies && ARRAY['USDC']::text[];
--- Repeat with different uuids/signal_types/dependency_keys for variety. Clean up with:
--- DELETE FROM chaindrain.alert WHERE raw_signal->>'source' LIKE 'phase4-%';
+**Reproducing the prod cron-fire on demand:**
+```bash
+curl -sS --max-time 90 -X POST \
+  -H "Authorization: Bearer $CRON_SECRET" \
+  https://chaindrain-mvp.vercel.app/api/cron/poll | jq .summary
 ```
+Expect `ok: true`, `elapsed_ms ≈ 5–10s` (5 pollers via `Promise.allSettled`), per-poller `{ alerts_emitted, alerts_persisted, elapsed_ms }`, and a flat `alerts: []` array of any rows persisted on this tick. Pollers are idempotent at the SQL level (each emits a new alert row per signal observation — Phase 4 explicitly defers dedup).
 
 **Two traps from earlier phases still relevant:**
 - **pnpm store-dir** (DECISIONS §18): if `pnpm install` ever hangs with no progress for minutes, run `xattr -rd com.apple.provenance node_modules .pnpm-store && rm -rf .pnpm-store apps/*/node_modules node_modules pnpm-lock.yaml`, then re-install with `required_permissions: ["all"]`. The root `.npmrc` already pins `store-dir=~/Library/pnpm/store`.
