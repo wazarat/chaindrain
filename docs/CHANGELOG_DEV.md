@@ -234,6 +234,63 @@ None yet this session — the changes are doc-only and a database state mutation
 
 ---
 
+## 2026-05-16 (PM) — Phase 1 partial: apps/mvp scaffolded; co-author hook installed; chat handed off
+
+### Session goals
+1. Strip the `Co-authored-by: Cursor <cursoragent@cursor.com>` trailer that the Cursor agent runtime auto-injects into every commit (user explicitly does not want it on GitHub).
+2. Begin Phase 1: scaffold `apps/mvp` per [chaindrain_export/CURSOR_PROMPT.md](../../../Downloads/chaindrain_export/CURSOR_PROMPT.md) "PHASE 1".
+
+### What was done
+
+#### a. `commit-msg` hook to strip the Cursor trailer
+- Diagnosed: the trailer is added by the Cursor agent runtime itself (not by a git hook, not by `git config commit.template`, not by `~/.gitmessage`). It cannot be disabled via repo or user config from inside the agent.
+- Mitigation: wrote `.git/hooks/commit-msg` (executable, gitignored — hooks aren't tracked) that:
+  - `grep -viE '^[[:space:]]*Co-authored-by:[[:space:]]+Cursor[[:space:]]*<'` to drop the trailer line.
+  - `awk` pass to trim trailing blank lines while preserving in-message blank lines.
+- Hook validated against a synthetic message; output is clean.
+- Force-pushed the previously-pushed Phase 0 commit (`4686d09 → fa7e795`) with the trailer stripped via `git commit --amend --no-edit -F /tmp/clean_msg`. Authored from `wazarat@outlook.com` (both author and committer) by passing `GIT_{AUTHOR,COMMITTER}_{EMAIL,NAME}` env vars on the command line — global git config still says `wazarat@users.noreply.github.com` and we are not allowed to mutate it (safety rule).
+- Verified on GitHub: the commit page now shows `wazarat` only, no Cursor co-author chip.
+
+#### b. Phase 1: `apps/mvp` scaffold
+- Ran `pnpm dlx create-next-app@latest mvp --typescript --tailwind --app --eslint --src-dir --import-alias "@/*" --no-turbopack --use-pnpm` from inside `apps/`. Scaffolder gave **Next.js 16.2.6 stable** + React 19.2.4 + Tailwind v4 (via `@tailwindcss/postcss`). The plan asked for "Next 15 stable" but 16 is now the current stable major and App Router is unchanged — accepted the version drift.
+- A non-fatal post-scaffold `next typegen exited with code 254` happened because the just-created `apps/mvp/` had no `node_modules` yet so `pnpm exec next` from workspace context failed. Project files are intact.
+- Rewrote `apps/mvp/package.json` to:
+  - `name: "@chaindrain/mvp"` (workspace-aligned)
+  - Pin `next 16.2.6`, `react 19.2.4`, `react-dom 19.2.4` (matches scaffolder)
+  - Add deps: `@supabase/supabase-js ^2.45.4`, `drizzle-orm ^0.36.4`, `postgres ^3.4.9`, `resend ^4.0.1`, `zod ^3.23.8`
+  - Add devDeps: `drizzle-kit ^0.30.1`, `tsx ^4.19.2` (rest are scaffold defaults)
+  - Add scripts: `db:introspect` (drizzle-kit), `seed` (delegates to `../../scripts/load_seed.mjs`), plus standard `dev/build/start/lint/typecheck`.
+- Updated `pnpm-workspace.yaml` to add `apps/mvp` alongside `apps/web` and `packages/*`.
+
+#### c. `pnpm install` stalled
+- `pnpm install --filter @chaindrain/mvp` ran for >7 minutes with no progress output and no `apps/mvp/node_modules/` directory created. Killed the process.
+- The user's chat context was at 88% so this session is being handed off rather than diagnosed in-place. The next chat picks up at "step 1: install deps" of the Phase 1 task list in `AI_CONTEXT.md` §7.
+
+### Files created (uncommitted at handoff)
+- `apps/mvp/` (entire scaffold: `src/app/{layout,page}.tsx`, `globals.css`, `favicon.ico`, `next.config.ts`, `tsconfig.json`, `eslint.config.mjs`, `postcss.config.mjs`, `package.json`, `README.md`, `AGENTS.md`, `CLAUDE.md`, `public/`).
+- `.git/hooks/commit-msg` (gitignored — git hooks aren't tracked).
+
+### Files modified (uncommitted)
+- `pnpm-workspace.yaml` — added `apps/mvp`.
+- `docs/AI_CONTEXT.md` — full rewrite with Phase 1 partial state and detailed handoff §8.
+- `docs/CHANGELOG_DEV.md` — this entry.
+- `docs/DECISIONS.md` — added §16 (Cursor co-author strip via commit-msg hook), §17 (Next 16 acceptance over plan's Next 15).
+
+### Commits this session
+- (Phase 0 trailer-strip amend) `fa7e795` — replaces `4686d09`. Same body content, no Cursor co-author. Force-pushed to `main`.
+- Phase 1 partial work is **not yet committed** (next chat will commit it).
+
+### Open follow-ups for the next session
+1. `pnpm install --filter @chaindrain/mvp` (or fallback: cd into `apps/mvp/` and run `npm install`). Network access required.
+2. Continue Phase 1 steps 2–12 from `AI_CONTEXT.md` §7 Phase 1: write Drizzle config, run introspect, write `/api/health`, create Vercel project, smoke-test, commit+push.
+3. Then proceed to Phase 2 (SCORE leg dashboard).
+
+### Caveats
+- Service-role key rotation deferred indefinitely now that `chaindrain-api` and `chaindrain-agent` Fly apps (the only consumers) are destroyed. The leaked value is dead. The new MVP will use whatever current service-role key the user pastes into Vercel env settings.
+- `.cursor/settings.json` was created by the IDE during this session. It is intentionally NOT staged for commit (editor-local config).
+
+---
+
 ## 2026-05-16 — Phase 0: hard-cut to MVP rebuild, 875-entity chaindrain.* schema loaded
 
 ### Session goals

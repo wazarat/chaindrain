@@ -183,3 +183,25 @@ The only thing kept warm is the legacy `chaindrain.vercel.app` deploy of `apps/w
 The bundled SQL (`02_seed.sql`) doesn't apply this fix and so cannot be used as a Postgres migration — it would error on `duplicate key value violates unique constraint "identity_pkey"`. The migration that would have copied that file in was deleted in favor of the JSON loader path. See `scripts/load_seed.mjs`.
 
 **See:** `scripts/load_seed.mjs:deriveUuid`, `chaindrain_export/data/entities_final.json`.
+
+---
+
+## 16. Strip the Cursor agent co-author trailer via `commit-msg` hook
+
+**Decision (2026-05-16):** every commit on this repo runs `.git/hooks/commit-msg`, which removes `Co-authored-by: Cursor <cursoragent@cursor.com>` lines (case-insensitive) before the commit object is created. Future agent-driven and human-driven commits will both show only `wazarat <wazarat@outlook.com>` on GitHub.
+
+**Rationale:** the Cursor agent runtime auto-injects a Cursor co-author trailer into every commit message it builds, with no opt-out exposed in the workspace, user, or extension settings. The user does not want that attribution on the public GitHub repo. Repo-local hooks are the cleanest mitigation: they intercept *every* commit (CLI, agent, IDE) without modifying global git config or fighting the agent runtime. Hooks aren't checked into git, so this hook needs to be re-installed if the repo is freshly cloned — that's documented in `AI_CONTEXT.md` §0.
+
+The previously-pushed Phase 0 commit (`4686d09`) already had the trailer; it was rewritten in-place via `git commit --amend` and force-pushed (`→ fa7e795`). One-time history rewrite, explicitly approved by the user (safety rule allows force-push to main only when the user explicitly requests it).
+
+**See:** `.git/hooks/commit-msg`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM entry.
+
+---
+
+## 17. Next 16 stable accepted over plan's Next 15 stable
+
+**Decision (2026-05-16, Phase 1):** `apps/mvp` was scaffolded with Next.js **16.2.6** (current stable major) instead of the plan's "Next.js 15 stable". React 19.2.4 + Tailwind v4 (`@tailwindcss/postcss`) accepted likewise.
+
+**Rationale:** `pnpm dlx create-next-app@latest` ships 16 as the default. The plan was written before Next 16 GA. App Router semantics are unchanged between 15 and 16; nothing in the MVP scope spec depends on a 15-specific API. Pinning to 16 avoids the legacy `apps/web`'s problem (it was on `15.0.0-rc.0` which had unsupported flags like `--turbopack` — see DECISIONS §6) and keeps us on a long-term-supported major. If anything in Phases 2–5 hits a 16-only regression, we'll downgrade per-phase.
+
+**See:** `apps/mvp/package.json`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM entry.
