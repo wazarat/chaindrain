@@ -12,7 +12,11 @@
     "seed": "node ../../scripts/load_seed.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "poll": "tsx --env-file=.env.local src/workers/poll-signals.ts"
+    "poll": "tsx --env-file=.env.local src/workers/poll-signals.ts",
+    "seed:exposure-layer1": "tsx --env-file=.env.local scripts/seed_exposure_demo.ts",
+    "seed:exposure-incidents": "tsx --env-file=.env.local scripts/seed_incidents_demo.ts",
+    "seed:exposure-similarity": "tsx --env-file=.env.local scripts/seed_similarity.ts",
+    "seed:exposure": "pnpm seed:exposure-layer1 && pnpm seed:exposure-incidents && pnpm seed:exposure-similarity"
   },
   "dependencies": {
     "@radix-ui/react-dialog": "^1.1.1",
