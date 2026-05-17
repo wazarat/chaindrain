@@ -1,4 +1,4 @@
-import { pgTable, pgSchema, index, check, uuid, timestamp, text, jsonb, integer, numeric, foreignKey, boolean, date } from "drizzle-orm/pg-core"
+import { pgTable, pgSchema, index, check, uuid, timestamp, text, jsonb, integer, numeric, foreignKey, boolean, date, primaryKey } from "drizzle-orm/pg-core"
 import { sql } from "drizzle-orm"
 
 export const chaindrain = pgSchema("chaindrain");
@@ -19,6 +19,52 @@ export const alertInChaindrain = chaindrain.table("alert", {
 	index("idx_alert_severity").using("btree", table.severity.asc().nullsLast().op("text_ops"), table.detected_at.desc().nullsFirst().op("text_ops")),
 	check("alert_severity_chk", sql`severity = ANY (ARRAY['critical'::text, 'high'::text, 'medium'::text, 'low'::text])`),
 	check("alert_signal_type_chk", sql`signal_type = ANY (ARRAY['stablecoin_depeg'::text, 'oracle_deviation'::text, 'bridge_pause'::text, 'admin_tx'::text, 'tvl_drop'::text])`),
+]);
+
+export const dependency_fingerprintInChaindrain = chaindrain.table("dependency_fingerprint", {
+	entity_id: uuid().primaryKey().notNull(),
+	oracle_providers: text().array(),
+	oracle_confidence: text(),
+	bridge_dependencies: text().array(),
+	bridge_confidence: text(),
+	stablecoin_dependencies: text().array(),
+	stablecoin_confidence: text(),
+	dvn_configuration: text(),
+	dvn_confidence: text(),
+	dependency_sources: text(),
+	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+	lst_lrt_dependencies: text().array(),
+	lst_lrt_confidence: text(),
+	dex_liquidity_venues: text().array(),
+	dex_liquidity_venues_confidence: text(),
+	cex_listings: text().array(),
+	cex_listings_confidence: text(),
+	custodian: text(),
+	custodian_confidence: text(),
+	kms_provider: text(),
+	kms_provider_confidence: text(),
+	rpc_provider_primary: text(),
+	rpc_provider_primary_confidence: text(),
+	frontend_host: text(),
+	frontend_host_confidence: text(),
+	npm_lockfile_sha: text(),
+	npm_lockfile_sha_confidence: text(),
+}, (table) => [
+	index("idx_dep_bridges").using("gin", table.bridge_dependencies.asc().nullsLast().op("array_ops")),
+	index("idx_dep_cex_listings").using("gin", table.cex_listings.asc().nullsLast().op("array_ops")),
+	index("idx_dep_dex_venues").using("gin", table.dex_liquidity_venues.asc().nullsLast().op("array_ops")),
+	index("idx_dep_dvn").using("btree", table.dvn_configuration.asc().nullsLast().op("text_ops")),
+	index("idx_dep_frontend_host").using("btree", table.frontend_host.asc().nullsLast().op("text_ops")),
+	index("idx_dep_kms_provider").using("btree", table.kms_provider.asc().nullsLast().op("text_ops")),
+	index("idx_dep_lst_lrt").using("gin", table.lst_lrt_dependencies.asc().nullsLast().op("array_ops")),
+	index("idx_dep_oracles").using("gin", table.oracle_providers.asc().nullsLast().op("array_ops")),
+	index("idx_dep_rpc_provider").using("btree", table.rpc_provider_primary.asc().nullsLast().op("text_ops")),
+	index("idx_dep_stables").using("gin", table.stablecoin_dependencies.asc().nullsLast().op("array_ops")),
+	foreignKey({
+			columns: [table.entity_id],
+			foreignColumns: [identityInChaindrain.entity_id],
+			name: "dependency_fingerprint_entity_id_fkey"
+		}).onDelete("cascade"),
 ]);
 
 export const tier_stateInChaindrain = chaindrain.table("tier_state", {
@@ -46,30 +92,6 @@ export const tier_stateInChaindrain = chaindrain.table("tier_state", {
 		}).onDelete("cascade"),
 ]);
 
-export const dependency_fingerprintInChaindrain = chaindrain.table("dependency_fingerprint", {
-	entity_id: uuid().primaryKey().notNull(),
-	oracle_providers: text().array(),
-	oracle_confidence: text(),
-	bridge_dependencies: text().array(),
-	bridge_confidence: text(),
-	stablecoin_dependencies: text().array(),
-	stablecoin_confidence: text(),
-	dvn_configuration: text(),
-	dvn_confidence: text(),
-	dependency_sources: text(),
-	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
-}, (table) => [
-	index("idx_dep_bridges").using("gin", table.bridge_dependencies.asc().nullsLast().op("array_ops")),
-	index("idx_dep_dvn").using("btree", table.dvn_configuration.asc().nullsLast().op("text_ops")),
-	index("idx_dep_oracles").using("gin", table.oracle_providers.asc().nullsLast().op("array_ops")),
-	index("idx_dep_stables").using("gin", table.stablecoin_dependencies.asc().nullsLast().op("array_ops")),
-	foreignKey({
-			columns: [table.entity_id],
-			foreignColumns: [identityInChaindrain.entity_id],
-			name: "dependency_fingerprint_entity_id_fkey"
-		}).onDelete("cascade"),
-]);
-
 export const contract_fingerprintInChaindrain = chaindrain.table("contract_fingerprint", {
 	entity_id: uuid().primaryKey().notNull(),
 	primary_contract_address: text(),
@@ -94,6 +116,9 @@ export const contract_fingerprintInChaindrain = chaindrain.table("contract_finge
 	bug_bounty_updated_date: date(),
 	bug_bounty_kyc_required: boolean(),
 	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+	contract_addresses: text().array(),
+	uses_assembly_bool: boolean(),
+	bug_bounty_program_enum: text(),
 }, (table) => [
 	index("idx_cf_admin_addr").using("btree", table.admin_address.asc().nullsLast().op("text_ops")),
 	index("idx_cf_audits_tier").using("btree", table.audits_tier.asc().nullsLast().op("int4_ops")),
@@ -105,6 +130,85 @@ export const contract_fingerprintInChaindrain = chaindrain.table("contract_finge
 			foreignColumns: [identityInChaindrain.entity_id],
 			name: "contract_fingerprint_entity_id_fkey"
 		}).onDelete("cascade"),
+]);
+
+export const governance_fingerprintInChaindrain = chaindrain.table("governance_fingerprint", {
+	entity_id: uuid().primaryKey().notNull(),
+	governance_type: text(),
+	governance_token_address: text(),
+	treasury_size_usd: numeric(),
+	team_size_estimate: integer(),
+	team_jurisdiction: text(),
+	incorporated_entity: text(),
+	is_anonymous_team: boolean(),
+	has_security_disclosure_policy: boolean(),
+	incident_response_sla_hours: integer(),
+	data_confidence: text().default('DEMO'),
+	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_gov_anonymous").using("btree", table.is_anonymous_team.asc().nullsLast().op("bool_ops")),
+	index("idx_gov_jurisdiction").using("btree", table.team_jurisdiction.asc().nullsLast().op("text_ops")),
+	index("idx_gov_type").using("btree", table.governance_type.asc().nullsLast().op("text_ops")),
+	foreignKey({
+			columns: [table.entity_id],
+			foreignColumns: [identityInChaindrain.entity_id],
+			name: "governance_fingerprint_entity_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const reputation_signalInChaindrain = chaindrain.table("reputation_signal", {
+	entity_id: uuid().primaryKey().notNull(),
+	github_repo_url: text(),
+	github_commit_velocity_30d: integer(),
+	github_contributor_count: integer(),
+	github_last_security_issue_date: date(),
+	twitter_handle: text(),
+	discord_invite: text(),
+	last_known_incident_date: date(),
+	kyt_screening_status: text(),
+	data_confidence: text().default('DEMO'),
+	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_rep_kyt_status").using("btree", table.kyt_screening_status.asc().nullsLast().op("text_ops")),
+	index("idx_rep_last_incident").using("btree", table.last_known_incident_date.desc().nullsLast().op("date_ops")),
+	foreignKey({
+			columns: [table.entity_id],
+			foreignColumns: [identityInChaindrain.entity_id],
+			name: "reputation_signal_entity_id_fkey"
+		}).onDelete("cascade"),
+]);
+
+export const incidentInChaindrain = chaindrain.table("incident", {
+	incident_id: uuid().defaultRandom().primaryKey().notNull(),
+	victim_entity_ids: uuid().array().notNull(),
+	event_date: date().notNull(),
+	disclosure_date: date(),
+	loss_amount_usd: numeric(),
+	funds_recovered_usd: numeric(),
+	actor_role: text(),
+	attack_strategy: text(),
+	aadapt_tactic_ids: text().array(),
+	aadapt_technique_ids: text().array(),
+	root_cause: text().notNull(),
+	secondary_root_causes: text().array(),
+	attack_layer: text(),
+	flash_loan_used: boolean(),
+	attacker_address: text(),
+	attacker_attribution: text(),
+	audit_firm_at_time: text().array(),
+	was_audited: boolean(),
+	bounty_program_at_time: boolean(),
+	tx_hashes: text().array(),
+	post_mortem_urls: text().array(),
+	narrative_summary: text(),
+	data_confidence: text().default('DEMO').notNull(),
+	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_incident_attack_layer").using("btree", table.attack_layer.asc().nullsLast().op("text_ops")),
+	index("idx_incident_attribution").using("btree", table.attacker_attribution.asc().nullsLast().op("text_ops")),
+	index("idx_incident_date").using("btree", table.event_date.desc().nullsFirst().op("date_ops")),
+	index("idx_incident_root_cause").using("btree", table.root_cause.asc().nullsLast().op("text_ops")),
+	index("idx_incident_victims").using("gin", table.victim_entity_ids.asc().nullsLast().op("array_ops")),
 ]);
 
 export const identityInChaindrain = chaindrain.table("identity", {
@@ -122,12 +226,96 @@ export const identityInChaindrain = chaindrain.table("identity", {
 	match_source: text(),
 	match_method: text(),
 	created_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+	subsector_tags: text().array(),
+	website_canonical: text(),
+	is_immutable_bool: boolean(),
+	is_permissionless_bool: boolean(),
 }, (table) => [
 	index("idx_identity_chains").using("gin", table.chain_deployments.asc().nullsLast().op("array_ops")),
 	index("idx_identity_sector").using("btree", table.sector.asc().nullsLast().op("text_ops")),
 	index("idx_identity_slug").using("btree", table.defillama_slug.asc().nullsLast().op("text_ops")),
+	index("idx_identity_subsector_tags").using("gin", table.subsector_tags.asc().nullsLast().op("array_ops")),
 	index("idx_identity_tvl").using("btree", table.tvl_usd.desc().nullsLast().op("numeric_ops")),
 ]);
+
+export const similarity_pairInChaindrain = chaindrain.table("similarity_pair", {
+	source_entity_id: uuid().notNull(),
+	target_entity_id: uuid().notNull(),
+	method_a_jaccard: numeric().notNull(),
+	method_b_overlap: integer().default(0).notNull(),
+	method_c_cosine: numeric().notNull(),
+	ensemble_score: numeric().notNull(),
+	shared_attributes: jsonb().default({}).notNull(),
+	rank: integer().notNull(),
+	computed_at: timestamp({ withTimezone: true, mode: 'string' }).defaultNow(),
+}, (table) => [
+	index("idx_sim_ensemble").using("btree", table.ensemble_score.desc().nullsFirst().op("numeric_ops")),
+	index("idx_sim_source_rank").using("btree", table.source_entity_id.asc().nullsLast().op("int4_ops"), table.rank.asc().nullsLast().op("int4_ops")),
+	foreignKey({
+			columns: [table.source_entity_id],
+			foreignColumns: [identityInChaindrain.entity_id],
+			name: "similarity_pair_source_entity_id_fkey"
+		}).onDelete("cascade"),
+	foreignKey({
+			columns: [table.target_entity_id],
+			foreignColumns: [identityInChaindrain.entity_id],
+			name: "similarity_pair_target_entity_id_fkey"
+		}).onDelete("cascade"),
+	primaryKey({ columns: [table.source_entity_id, table.target_entity_id], name: "similarity_pair_pkey"}),
+	check("similarity_pair_no_self", sql`source_entity_id <> target_entity_id`),
+	check("similarity_pair_rank_pos", sql`rank >= 1`),
+]);
+export const mvp_master_dedupInChaindrain = chaindrain.view("mvp_master_dedup", {	entity_id: uuid(),
+	name: text(),
+	sector: text(),
+	tvl_usd: numeric(),
+	risk_score: numeric(),
+	risk_tier: text(),
+	coverage_tier: text(),
+	blast_radius_usd: numeric(),
+	state: text(),
+	website: text(),
+	launch_date: date(),
+	is_immutable: text(),
+	is_permissionless: text(),
+	defillama_slug: text(),
+	coingecko_id: text(),
+	primary_contract_address: text(),
+	implementation_address: text(),
+	proxy_pattern: text(),
+	upgrade_authority_type: text(),
+	admin_address: text(),
+	multisig_threshold: integer(),
+	timelock_delay_hours: numeric(),
+	compiler_version: text(),
+	verified_source: boolean(),
+	uses_assembly: boolean(),
+	external_call_count: integer(),
+	audits_tier: integer(),
+	audit_firms: text(),
+	last_audit_date: date(),
+	audit_links: text(),
+	bug_bounty_program: text(),
+	bug_bounty_max_payout_usd: numeric(),
+	bug_bounty_immunefi_url: text(),
+	oracle_confidence: text(),
+	bridge_confidence: text(),
+	stablecoin_confidence: text(),
+	dvn_configuration: text(),
+	dvn_confidence: text(),
+	dependency_sources: text(),
+	tvl_factor: numeric(),
+	mutability_factor: numeric(),
+	audit_factor: numeric(),
+	bounty_factor: numeric(),
+	last_state_change: timestamp({ withTimezone: true, mode: 'string' }),
+	oracle_providers: text(),
+	bridge_dependencies: text(),
+	stablecoin_dependencies: text(),
+	chain_deployments: text(),
+	company_key: text(),
+}).as(sql`WITH base AS ( SELECT m.entity_id, m.name, m.website, m.sector, m.chain_deployments, m.tvl_usd, m.launch_date, m.is_immutable, m.is_permissionless, m.defillama_slug, m.coingecko_id, m.primary_contract_address, m.implementation_address, m.proxy_pattern, m.upgrade_authority_type, m.admin_address, m.multisig_threshold, m.timelock_delay_hours, m.compiler_version, m.verified_source, m.uses_assembly, m.external_call_count, m.audits_tier, m.audit_firms, m.last_audit_date, m.audit_links, m.bug_bounty_program, m.bug_bounty_max_payout_usd, m.bug_bounty_immunefi_url, m.oracle_providers, m.oracle_confidence, m.bridge_dependencies, m.bridge_confidence, m.stablecoin_dependencies, m.stablecoin_confidence, m.dvn_configuration, m.dvn_confidence, m.dependency_sources, m.risk_score, m.risk_tier, m.coverage_tier, m.tvl_factor, m.mutability_factor, m.audit_factor, m.bounty_factor, m.blast_radius_usd, m.state, m.last_state_change, TRIM(BOTH FROM split_part(m.name, ' ('::text, 1)) AS stripped_name FROM chaindrain.mvp_master m ), keyed AS ( SELECT b.entity_id, b.name, b.website, b.sector, b.chain_deployments, b.tvl_usd, b.launch_date, b.is_immutable, b.is_permissionless, b.defillama_slug, b.coingecko_id, b.primary_contract_address, b.implementation_address, b.proxy_pattern, b.upgrade_authority_type, b.admin_address, b.multisig_threshold, b.timelock_delay_hours, b.compiler_version, b.verified_source, b.uses_assembly, b.external_call_count, b.audits_tier, b.audit_firms, b.last_audit_date, b.audit_links, b.bug_bounty_program, b.bug_bounty_max_payout_usd, b.bug_bounty_immunefi_url, b.oracle_providers, b.oracle_confidence, b.bridge_dependencies, b.bridge_confidence, b.stablecoin_dependencies, b.stablecoin_confidence, b.dvn_configuration, b.dvn_confidence, b.dependency_sources, b.risk_score, b.risk_tier, b.coverage_tier, b.tvl_factor, b.mutability_factor, b.audit_factor, b.bounty_factor, b.blast_radius_usd, b.state, b.last_state_change, b.stripped_name, CASE WHEN b.tvl_usd IS NOT NULL AND b.risk_score IS NOT NULL THEN min(b.stripped_name) OVER (PARTITION BY b.tvl_usd, b.risk_score, (COALESCE(b.blast_radius_usd, 0::numeric)), (split_part(b.stripped_name, ' '::text, 1))) ELSE b.stripped_name END AS company_key FROM base b ), ranked AS ( SELECT k.entity_id, k.name, k.website, k.sector, k.chain_deployments, k.tvl_usd, k.launch_date, k.is_immutable, k.is_permissionless, k.defillama_slug, k.coingecko_id, k.primary_contract_address, k.implementation_address, k.proxy_pattern, k.upgrade_authority_type, k.admin_address, k.multisig_threshold, k.timelock_delay_hours, k.compiler_version, k.verified_source, k.uses_assembly, k.external_call_count, k.audits_tier, k.audit_firms, k.last_audit_date, k.audit_links, k.bug_bounty_program, k.bug_bounty_max_payout_usd, k.bug_bounty_immunefi_url, k.oracle_providers, k.oracle_confidence, k.bridge_dependencies, k.bridge_confidence, k.stablecoin_dependencies, k.stablecoin_confidence, k.dvn_configuration, k.dvn_confidence, k.dependency_sources, k.risk_score, k.risk_tier, k.coverage_tier, k.tvl_factor, k.mutability_factor, k.audit_factor, k.bounty_factor, k.blast_radius_usd, k.state, k.last_state_change, k.stripped_name, k.company_key, row_number() OVER (PARTITION BY k.company_key ORDER BY (length(k.stripped_name)), k.name) AS rn FROM keyed k ) SELECT entity_id, name, sector, tvl_usd, risk_score, risk_tier, coverage_tier, blast_radius_usd, state, website, launch_date, is_immutable, is_permissionless, defillama_slug, coingecko_id, primary_contract_address, implementation_address, proxy_pattern, upgrade_authority_type, admin_address, multisig_threshold, timelock_delay_hours, compiler_version, verified_source, uses_assembly, external_call_count, audits_tier, audit_firms, last_audit_date, audit_links, bug_bounty_program, bug_bounty_max_payout_usd, bug_bounty_immunefi_url, oracle_confidence, bridge_confidence, stablecoin_confidence, dvn_configuration, dvn_confidence, dependency_sources, tvl_factor, mutability_factor, audit_factor, bounty_factor, last_state_change, COALESCE(( SELECT array_agg(DISTINCT x.x ORDER BY x.x) AS array_agg FROM keyed k2, LATERAL unnest(k2.oracle_providers) x(x) WHERE k2.company_key = r.company_key AND x.x IS NOT NULL), oracle_providers) AS oracle_providers, COALESCE(( SELECT array_agg(DISTINCT x.x ORDER BY x.x) AS array_agg FROM keyed k2, LATERAL unnest(k2.bridge_dependencies) x(x) WHERE k2.company_key = r.company_key AND x.x IS NOT NULL), bridge_dependencies) AS bridge_dependencies, COALESCE(( SELECT array_agg(DISTINCT x.x ORDER BY x.x) AS array_agg FROM keyed k2, LATERAL unnest(k2.stablecoin_dependencies) x(x) WHERE k2.company_key = r.company_key AND x.x IS NOT NULL), stablecoin_dependencies) AS stablecoin_dependencies, COALESCE(( SELECT array_agg(DISTINCT x.x ORDER BY x.x) AS array_agg FROM keyed k2, LATERAL unnest(k2.chain_deployments) x(x) WHERE k2.company_key = r.company_key AND x.x IS NOT NULL), chain_deployments) AS chain_deployments, company_key FROM ranked r WHERE rn = 1`);
+
 export const mvp_masterInChaindrain = chaindrain.view("mvp_master", {	entity_id: uuid(),
 	name: text(),
 	website: text(),
