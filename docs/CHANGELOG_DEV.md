@@ -10,6 +10,116 @@ Format per entry:
 
 ---
 
+## 2026-05-16 (PM #12) — Phase 6 complete: Exposure Graph 4th tab end-to-end
+
+### Session goals
+Resume Phase 6 from the PM #11 pause point. The Layer 1 demo seeder had been killed at 226s with zero rows persisted (3,860 row-by-row UPDATEs over the Supavisor pooler — see PM #11 entry below). The brief listed an 11-step queue: fix the perf bug, run Layer 1, ship the incident + similarity seeders, extend the query layer, add the JSON API routes, build the UI primitives + four `/exposure*` pages, widen the site header, append the methodology section, write tests, and smoke-test the deploy.
+
+### What shipped
+
+**1. Layer 1 seeder rewrite (perf fix)** — `apps/mvp/scripts/seed_exposure_demo.ts` switched from 5 row-by-row UPDATEs to 5 bulk statements via `INSERT/UPDATE … FROM jsonb_to_recordset(${sql.json(payload)})`. The pattern: build the full per-table payload array in JS first (one entry per entity), pass it through `sql.json(...)` (which marshals it as a `jsonb` array, not a string literal — earlier `JSON.stringify` attempts hit `cannot call jsonb_to_recordset on a non-array`), then `UPDATE … FROM jsonb_to_recordset(...) AS x(...)` for the simple identity backfill and `INSERT … ON CONFLICT DO UPDATE SET col = CASE WHEN t.col_confidence IN ('HIGH','MEDIUM','INFERRED') THEN t.col ELSE EXCLUDED.col END` for the gated columns. Total round-trips dropped from ~3,860 to 5; runtime from 226s+ (killed) to **726ms** end-to-end for all 772 entities × 5 tables. Verified in Supabase MCP: `governance_fingerprint=772 / reputation_signal=772 / dependency_fingerprint with custodian|kms=772 / identity with subsector_tags=772`. Real-data preservation confirmed by sampling rows where pre-existing `*_confidence ∈ ('HIGH','MEDIUM','INFERRED')` — none overwritten.
+
+**2. Layer 2 — `scripts/seed_incidents_demo.ts`** (new) — 356 incidents seeded across the 24 root causes per `ROOT_CAUSE_SPECS.count`. Each incident:
+- Deterministic via `seedFromEntityId(rc + index)` × `mulberry32` (rerunnable, identical output across runs).
+- Victim set drawn from `ROOT_CAUSE_PREDICATES[rc]`-eligible entities (Method B has real signal).
+- `event_date` from `triangularDate('2018-01-01', '2025-12-31', '2024-06-01')` so density peaks mid-2024.
+- `loss_amount_usd = logNormalLoss(lower, upper)` per root-cause spec.
+- AADAPT tactic/technique IDs prefixed `DEMO:AADAPT.…` so the UI chip ribbon renders the Demo pill.
+- Persisted via a single `INSERT … FROM jsonb_to_recordset(${sql.json(incidents)})`; ~300ms for all 356 rows. Reputation backfill (`UPDATE reputation_signal SET last_known_incident_date = ...`) likewise one bulk statement; populates 323 entities (rows where the entity was a victim at least once).
+
+**3. Layer 3 — `scripts/seed_similarity.ts`** (new) — Methods A/B/C ensemble, top-25 per source persisted to `similarity_pair`:
+- **Method A** — weighted Jaccard over 10 attribute axes per scope §5.1 (audit_firms 0.18, oracle_providers 0.20, bridge_dependencies 0.18, stablecoin_dependencies 0.10, lst_lrt_dependencies 0.06, chain_deployments 0.08, kms_provider singleton 0.06, frontend_host singleton 0.04, dvn_required 0.06, subsector_tags 0.04). Weights sum to 1.00 (asserted by a test).
+- **Method B** — incident overlap. For each source, find the set of root_causes its `PredicateEntity` projection matches; for each target, count incidents where `root_cause ∈ source.causes AND target ∈ victims`. Normalised `min(1, count / 5)`.
+- **Method C** — deterministic 64-dim fake embedding. Bug fixed: SHA-256 is 32 bytes / 64 hex chars, so a single hash only fills buckets 0..31; the original implementation left buckets 32..63 zero and produced `NaN` cosines (caught by a `NOT NULL` constraint violation on the first run). Fix: concatenate two domain-separated hashes per `(key, value)` pair (`:lo` for buckets 0..31, `:hi` for buckets 32..63) and L2-normalise. Cosine clamped to [0, 1] via `(dot + 1) / 2` with a `Number.isFinite` guard returning 0.5 on degenerate bags.
+- **Ensemble** — `0.30·A + 0.40·min(1, B/5) + 0.30·C`. Top-25 per source × 772 sources = **19,300 rows**, persisted in 1,000-row INSERT batches; end-to-end 3-4s including the 595K pair scoring loop. Verified: `total=19,300, sources=772, avg_per_source=25.00, max_ensemble=0.7492`. RealT's top-5 = BlackRock BUIDL, Kelp DAO, Backed Finance, Lift Dollar (USDL), Protocol-Native Treasury Agents — all RWA/tokenisation peers with shared `credit`/`real_estate` subsector tags, Chainlink oracle, USDC stablecoin dep, and 2-3 shared Method-B root-causes per pair.
+- **Math factored into `src/lib/exposure/similarity.ts`** so the seeder and unit tests import from one source of truth (`methodA`, `jaccard`, `fakeEmbed`, `cosineClamped`, `methodBNormalize`, `ensembleScore`, `ATTR_WEIGHTS`).
+
+**4. Query layer extensions** — `apps/mvp/src/lib/db/queries.ts` grew by ~600 lines. New `*Cached` siblings (all `unstable_cache`-wrapped, revalidate 30s-10min, tagged by the new constants):
+- `listExposureEntities` — paginated list with sort by `risk_score`, `tvl_usd`, `blast_radius_usd`, `historical_incidents`, `top_twin_score`, etc. Filters: sectors, riskTiers, coverageTiers, **hasIncidentHistory** (boolean), **rootCauseExposure** (multi-select). Each row includes the top-1 twin via `LEFT JOIN LATERAL` on `similarity_pair WHERE rank=1`.
+- `getExposureEntity` — full row joining `mvp_master_dedup u` with `identity`, `contract_fingerprint`, `dependency_fingerprint`, `governance_fingerprint`, `reputation_signal`. Returns the typed `ExposureEntityDetail` extending the existing `EntityDetail` with all §3.1-§3.6 fields and per-field `_confidence` flags.
+- `getThreatHistory(entityId)` — `incident WHERE entityId = ANY(victim_entity_ids) ORDER BY event_date DESC`.
+- `getPeerIncidents(entityId, rootCauses[])` — incidents grouped by root_cause where the entity is **not** a victim but the predicate matches; returns `victim_names[]` via a correlated subquery.
+- `getDependencyTwins(entityId, { limit })` — `similarity_pair JOIN identity ON target_entity_id` ordered by `rank ASC`, includes `shared_attributes jsonb`.
+- `listIncidents(...)` — paginated ledger with root_cause, attribution, attack_layer, year, min-loss filters.
+- `getIncidentById` — single-row + victim_names array.
+- `getExposureKpis()` — 4 metrics in one round-trip: entities_mapped (772), historical_incidents (356), dependency_edges (333 = SUM of oracle+bridge+stable array lengths), avg_twins_per_entity (25.00).
+- **New tag constants:** `CACHE_TAG_EXPOSURE_LAYER1`, `CACHE_TAG_EXPOSURE_INCIDENTS`, `CACHE_TAG_EXPOSURE_SIMILARITY` so each seeder can later issue a targeted `revalidateTag`.
+
+**5. API routes** — both `runtime: nodejs`, `dynamic: force-dynamic`:
+- `/api/exposure/twins/[entity_id]?limit=N` — zod-validated, returns `{ ok, data: DependencyTwinRow[] }`.
+- `/api/exposure/peers/[entity_id]` — loads the entity, projects it onto `PredicateEntity` (using the same fields the page does), calls `matchingRootCauses` server-side, then `getPeerIncidentsCached`. Returns `{ ok, data: { matched_root_causes, groups } }`.
+
+**6. UI** — all new components are framework-default Tailwind, no new libraries:
+- `<DemoChip confidence>` — renders `Demo` for `DEMO`, `Inferred` for `INFERRED`, nothing for `HIGH`/`MEDIUM` (verbatim from scope §6.4).
+- `<DemoBanner />` — persistent amber banner with `<Info>` icon, copy paraphrasing scope §0 ("Where real data exists today we render it; everywhere else we render synthetic enrichment generated deterministically… clearly marked Demo or Inferred"). Links to `/methodology#exposure-graph`.
+- `<ExposureKpiCards />` — 4-card strip (entities mapped, historical incidents, dependency edges, avg twins / entity) styled to match dashboard KPI cards.
+- `<ExposureTable />` — client component, URL-as-state, sortable cols (name, sector, tvl, risk_score, historical_incidents, top_twin_score), `top dependency twin` rendered as a clickable teal chip linking to the twin's `/exposure/[entity_id]`.
+- `<ExposureProfile />` — `<details>`-collapsible inline drawer with five sections (Identity / Contract / Dependency / Governance / Reputation). Every field that's synthetic shows the DemoChip inline. Uses the existing field-confidence columns directly.
+- `<ThreatHistoryPanel />` — vertical timeline of incidents with attack-layer-coloured root-cause chips + AADAPT tactic ribbons. Empty state copy verbatim from scope §6.2.
+- `<PeerIncidentsPanel />` — grouped by root_cause, header shows N historical peer events + matched-predicate summary; each group shows up to 5 peer victims with date + loss. Empty state verbatim from scope §6.2.
+- `<DependencyTwinsPanel />` — responsive grid of twin cards; each card shows rank, ensemble score, three sub-bars (A/B/C), and the top 4 shared attributes from `similarity_pair.shared_attributes`. Click-through opens the twin's detail page.
+- `<IncidentsTable />` — ledger view, sortable by event_date / loss_amount / root_cause, rows are clickable.
+
+**7. Pages** — all four `/exposure*` routes, each rendering `<SiteHeader active="exposure" />` + `<DemoBanner />`:
+- `/exposure` — `<ExposureKpiCards />` + `<ExposureTable />`.
+- `/exposure/[entity_id]` — `<ExposureProfile />` + three panels with anchor IDs (`#threat-history`, `#peer-incidents`, `#dependency-twins`). Server-side computes `matchingRootCauses(predicateEntity)`, then `Promise.all`s the three queries.
+- `/exposure/incidents` — `<IncidentsTable />` over `listIncidentsCached`.
+- `/exposure/incidents/[incident_id]` — full incident detail: narrative, victims (linked back to `/exposure/[entity_id]`), classification dl, AADAPT tactic/technique chips, evidence dl with post-mortem URLs (marked "synthetic") + collapsed tx_hashes.
+
+**8. Site header** — `SiteHeaderProps.active` widened to `"dashboard" | "alerts" | "exposure" | "methodology"`. The Exposure Graph link sits between Alerts and Methodology and renders a Hydra-Teal `Preview` pill (`bg-teal-700/15 text-teal-700 dark:text-teal-300 rounded-full text-[10px] uppercase tracking-wider`) per scope §1.
+
+**9. Methodology page** — appended §6 "Exposure Graph & Similarity Engine" with anchor `id="exposure-graph"`. Three sub-cards explain Methods A/B/C and their weights; a fourth card walks through the RealT example; an amber callout enumerates what's synthetic today (incident ledger, Layer 1 DEMO/INFERRED, Method C embeddings) and points to the Phase 1b/2a/2b/3a/3b/3c roadmap.
+
+**10. Tests — 84 cases total, all green:**
+- `src/lib/exposure/predicates.test.ts` — 24 cases (one per root_cause), plus `total-over-minimal-input` guard, plus `matchingRootCauses` determinism check.
+- `src/lib/exposure/similarity.test.ts` — Jaccard math (4 cases), weight sum = 1.00, `methodA` identical/zero/symmetric cases, `fakeEmbed` unit norm + determinism + NaN-safe, `cosineClamped` self-cosine = 1.0 + bound check, `methodBNormalize` saturation, `ensembleScore` algebraic identity (0.5 · 0.3 + 0.6 · 0.4 + 0.8 · 0.3).
+- `scripts/lib/demo_rand.test.ts` — `mulberry32` reproducibility, `seedFromEntityId` distinctness, `pick`/`pickN`/`weighted` distribution, `intInRange` bounds, `sha256Hex` stability, `deterministicAddress` regex shape, `triangularDate` determinism + bounds, `logNormalLoss` finite + bounded.
+
+**11. CI gates** — `pnpm typecheck` ✓ (`tsc --noEmit`, 0 errors), `pnpm lint` ✓ (eslint clean after dropping 3 unused imports + 1 `prefer-const` fix), `pnpm test` ✓ (84/84 in 474ms), `pnpm build` ✓ (Next 16.2.6 turbopack; all four `/exposure*` routes + the two `/api/exposure/*` routes registered).
+
+### Perf gotcha resolved
+The PM #11 perf gotcha was the row-by-row UPDATE pattern → 226s timeout. The fix (above) is `jsonb_to_recordset` bulk UPSERTs. Note for future work: `sql.json(arrayValue)` is the right primitive in `postgres-js` — `${JSON.stringify(arr)}::jsonb` would escape as a `jsonb` string-literal, not a `jsonb` array. The TypeScript signature for `sql.json` is conservative, so we use a tiny `asJson = (value) => sql.json(value as Parameters<typeof sql.json>[0])` cast helper inside the seeders.
+
+### Files modified / created
+
+**Modified:**
+- `apps/mvp/scripts/seed_exposure_demo.ts` — full rewrite (5 batched UPSERTs).
+- `apps/mvp/src/lib/db/queries.ts` — +~600 lines (Phase 6 queries + 3 cache tags).
+- `apps/mvp/src/lib/api/schemas.ts` — added `exposureQuerySchema`, `incidentsQuerySchema`, `incidentIdParamsSchema`, sort field enums.
+- `apps/mvp/src/components/site-header.tsx` — `active` union + Preview pill rendering.
+- `apps/mvp/src/app/methodology/page.tsx` — appended §6 Exposure Graph section.
+- `apps/mvp/package.json` — already had the three seed scripts from PM #11; no change here.
+- `docs/AI_CONTEXT.md`, `docs/CHANGELOG_DEV.md` — this entry.
+
+**Created:**
+- `apps/mvp/scripts/seed_incidents_demo.ts`
+- `apps/mvp/scripts/seed_similarity.ts`
+- `apps/mvp/scripts/lib/demo_rand.test.ts`
+- `apps/mvp/src/lib/exposure/similarity.ts`
+- `apps/mvp/src/lib/exposure/similarity.test.ts`
+- `apps/mvp/src/lib/exposure/predicates.test.ts`
+- `apps/mvp/src/app/api/exposure/twins/[entity_id]/route.ts`
+- `apps/mvp/src/app/api/exposure/peers/[entity_id]/route.ts`
+- `apps/mvp/src/app/exposure/page.tsx`
+- `apps/mvp/src/app/exposure/[entity_id]/page.tsx`
+- `apps/mvp/src/app/exposure/incidents/page.tsx`
+- `apps/mvp/src/app/exposure/incidents/[incident_id]/page.tsx`
+- `apps/mvp/src/components/demo-chip.tsx`
+- `apps/mvp/src/components/demo-banner.tsx`
+- `apps/mvp/src/components/exposure-kpi-cards.tsx`
+- `apps/mvp/src/components/exposure-table.tsx`
+- `apps/mvp/src/components/exposure-profile.tsx`
+- `apps/mvp/src/components/exposure-panels.tsx`
+- `apps/mvp/src/components/incidents-table.tsx`
+
+### Next steps
+- Commit + push with `wazarat <wazarat@outlook.com>` authorship.
+- Smoke `chaindrain-mvp.vercel.app/exposure` cold/warm latency once the Vercel build lands; verify the three panels on a real entity (RealT).
+- Optional follow-up: replace the `Math.exp` Poisson-like loop in `seed_incidents_demo.ts` with a proper inverse-CDF; not required for the demo.
+- Phase 6 ship gate is now: prod smoke ✓.
+
+---
+
 ## 2026-05-16 (PM #11) — Phase 6 part 1: Exposure Graph migration applied + scaffolding committed (seeders pending)
 
 ### Session goals

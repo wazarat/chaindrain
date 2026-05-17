@@ -2,12 +2,18 @@ import Link from "next/link";
 import { cn } from "@/lib/utils";
 
 interface SiteHeaderProps {
-  active: "dashboard" | "methodology" | "alerts";
+  active: "dashboard" | "methodology" | "alerts" | "exposure";
 }
 
-const NAV: Array<{ id: SiteHeaderProps["active"]; label: string; href: string }> = [
+const NAV: Array<{
+  id: SiteHeaderProps["active"];
+  label: string;
+  href: string;
+  badge?: string;
+}> = [
   { id: "dashboard", label: "Risk dashboard", href: "/" },
   { id: "alerts", label: "Alerts", href: "/alerts" },
+  { id: "exposure", label: "Exposure Graph", href: "/exposure", badge: "Preview" },
   { id: "methodology", label: "Methodology", href: "/methodology" },
 ];
 
@@ -40,13 +46,18 @@ export function SiteHeader({ active }: SiteHeaderProps) {
                 key={item.id}
                 href={item.href}
                 className={cn(
-                  "rounded-md px-3 py-1.5 font-medium transition-colors",
+                  "inline-flex items-center gap-1.5 rounded-md px-3 py-1.5 font-medium transition-colors",
                   isActive
                     ? "bg-zinc-900 text-white dark:bg-zinc-100 dark:text-zinc-900"
                     : "text-zinc-600 hover:text-zinc-900 dark:text-zinc-400 dark:hover:text-zinc-100",
                 )}
               >
                 {item.label}
+                {item.badge ? (
+                  <span className="rounded-full bg-teal-700/15 px-2 py-0.5 text-[10px] uppercase tracking-wider text-teal-700 dark:text-teal-300">
+                    {item.badge}
+                  </span>
+                ) : null}
               </Link>
             );
           })}

@@ -421,6 +421,117 @@ export default function MethodologyPage() {
         </div>
       </section>
 
+      <section
+        id="exposure-graph"
+        className="flex scroll-mt-24 flex-col gap-4"
+      >
+        <h2 className="text-xl font-semibold tracking-tight">
+          6. Exposure Graph &amp; Similarity Engine
+        </h2>
+        <p className="text-sm text-zinc-700 dark:text-zinc-300">
+          The Exposure Graph tab joins three layers — Layer 1 enrichment
+          (identity / contract / dependency / governance / reputation), Layer 2
+          incident ledger, and Layer 3 similarity — into one per-entity view
+          with three explainable panels: Threat History, Peer Incidents
+          (Method B), and Dependency Twins (Method A + C ensemble).
+        </p>
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h3 className="text-sm font-semibold">
+              Method A · Weighted Jaccard
+            </h3>
+            <p className="mt-1 text-xs text-zinc-500">weight 0.30</p>
+            <p className="mt-2 text-sm">
+              Compares 10 attribute sets — audit firms, oracle providers,
+              bridge dependencies, stablecoin dependencies, chain deployments,
+              LST/LRT deps, subsector tags, DVN config, KMS provider, frontend
+              host. Best at &ldquo;same shape of stack.&rdquo;
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h3 className="text-sm font-semibold">Method B · Incident overlap</h3>
+            <p className="mt-1 text-xs text-zinc-500">
+              weight 0.40, normalised <code>min(1, count / 5)</code>
+            </p>
+            <p className="mt-2 text-sm">
+              Counts shared vulnerability-class incidents derived from the 24
+              root-cause predicates. Best at &ldquo;has been bitten by the same
+              kind of attack.&rdquo; This is the only method that fires on
+              real history rather than configuration shape.
+            </p>
+          </div>
+          <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+            <h3 className="text-sm font-semibold">
+              Method C · Deterministic embedding cosine
+            </h3>
+            <p className="mt-1 text-xs text-zinc-500">weight 0.30</p>
+            <p className="mt-2 text-sm">
+              64-dimensional pseudo-embedding built from concatenated SHA-256
+              hashes of the same attribute bag. Stands in for a real embedding
+              model until Phase 3c swaps it for OpenAI <code>text-embedding-3</code>.
+              Best at catching semantic neighbours that share no exact tokens
+              (e.g. RWA-credit ↔ tokenised treasury).
+            </p>
+          </div>
+        </div>
+
+        <div className="rounded-xl border border-zinc-200 bg-white p-5 shadow-sm dark:border-zinc-800 dark:bg-zinc-900">
+          <h3 className="text-sm font-semibold">
+            Ensemble &amp; worked example
+          </h3>
+          <p className="mt-2 text-sm">
+            For every source entity the engine scores 771 candidate targets,
+            keeps the top 25 by{" "}
+            <code>ensemble = 0.30 · A + 0.40 · min(1, B/5) + 0.30 · C</code>,
+            and writes them to <code>chaindrain.similarity_pair</code>. Today
+            the universe is 772 entities × 25 twins = 19,300 rows; compute
+            finishes in &lt; 4s on a single Node process.
+          </p>
+          <p className="mt-3 text-sm">
+            <span className="font-medium">RealT</span> (RWA / tokenised
+            real-estate) currently lists BlackRock BUIDL, Kelp DAO, Backed
+            Finance, and Lift Dollar (USDL) in its top-5 — all peer
+            real-world-asset issuers with shared <code>credit</code> /
+            <code>real_estate</code> subsector tags, Chainlink oracle, and
+            stablecoin-backed redemption rails. Method B contributes 2–3
+            shared incident root-causes per pair (<code>private_key_leak</code>,
+            <code>counterparty_default</code>, <code>rounding_precision</code>).
+          </p>
+        </div>
+
+        <div className="rounded-xl border border-amber-500/40 bg-amber-500/10 p-5 text-sm dark:bg-amber-500/5">
+          <h3 className="text-sm font-semibold uppercase tracking-wider text-amber-900 dark:text-amber-200">
+            What is synthetic today
+          </h3>
+          <ul className="mt-2 list-disc space-y-1 pl-5 text-amber-900 dark:text-amber-200">
+            <li>
+              <strong>Incident ledger</strong> — 356 deterministically
+              generated incidents conditioned on the 24 root-cause predicates.
+              Phase 2a replaces this with DefiLlama Hacks / Rekt / SlowMist
+              ingestion.
+            </li>
+            <li>
+              <strong>Layer 1 enrichment</strong> at confidence{" "}
+              <code>DEMO</code> or <code>INFERRED</code> — every field that
+              shows a <code>Demo</code> / <code>Inferred</code> pill is
+              synthetic. Phase 1b and Phase 2b backfill real custodian / KMS
+              provider / RPC / frontend host / governance / GitHub data.
+            </li>
+            <li>
+              <strong>Method C embeddings</strong> — the 64-dim SHA-256 vectors
+              are deterministic but carry no learned semantics. Phase 3c swaps
+              them for OpenAI <code>text-embedding-3-small</code>.
+            </li>
+          </ul>
+          <p className="mt-3 text-xs text-amber-900/80 dark:text-amber-200/80">
+            See <code>~/Downloads/chaindrain_exposure_graph_scope.md</code> in
+            the repository for the full Phase 6 scope and the linked roadmap
+            phases 1b / 2a / 2b / 3a / 3b / 3c.
+          </p>
+        </div>
+      </section>
+
       <footer className="flex items-center justify-between border-t border-zinc-200 pt-4 text-xs text-zinc-500 dark:border-zinc-800">
         <span>
           Source views:{" "}
@@ -430,6 +541,14 @@ export default function MethodologyPage() {
           ·{" "}
           <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">
             chaindrain.alert
+          </code>{" "}
+          ·{" "}
+          <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">
+            chaindrain.incident
+          </code>{" "}
+          ·{" "}
+          <code className="rounded bg-zinc-100 px-1 py-0.5 dark:bg-zinc-800">
+            chaindrain.similarity_pair
           </code>
         </span>
       </footer>

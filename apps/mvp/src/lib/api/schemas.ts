@@ -95,6 +95,74 @@ export const alertIdParamsSchema = z.object({
   alert_id: z.string().uuid(),
 });
 
+// Phase 6 — Exposure Graph
+
+export const EXPOSURE_SORT_FIELDS = [
+  "name",
+  "sector",
+  "risk_score",
+  "tvl_usd",
+  "blast_radius_usd",
+  "historical_incidents",
+  "top_twin_score",
+] as const;
+
+const trueish = ["1", "true", "yes"];
+const falseish = ["0", "false", "no"];
+
+export const exposureQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(EXPOSURE_SORT_FIELDS).default("risk_score"),
+  direction: z.enum(SORT_DIRECTIONS).default("desc"),
+  search: z
+    .string()
+    .trim()
+    .max(200)
+    .optional()
+    .transform((v) => (v && v.length > 0 ? v : undefined)),
+  sectors: csvList,
+  riskTiers: csvEnumList(RISK_TIERS),
+  coverageTiers: csvEnumList(COVERAGE_TIERS),
+  hasIncidentHistory: z
+    .string()
+    .optional()
+    .transform((v) => {
+      if (v == null) return undefined;
+      const lower = v.toLowerCase();
+      if (trueish.includes(lower)) return true;
+      if (falseish.includes(lower)) return false;
+      return undefined;
+    }),
+  rootCauseExposure: csvList,
+});
+
+export type ExposureQuery = z.output<typeof exposureQuerySchema>;
+
+export const INCIDENT_SORT_FIELDS = [
+  "event_date",
+  "loss_amount_usd",
+  "root_cause",
+] as const;
+
+export const incidentsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  pageSize: z.coerce.number().int().min(1).max(200).default(50),
+  sort: z.enum(INCIDENT_SORT_FIELDS).default("event_date"),
+  direction: z.enum(SORT_DIRECTIONS).default("desc"),
+  rootCauses: csvList,
+  attribution: csvList,
+  attackLayer: csvList,
+  year: z.coerce.number().int().min(2009).max(2030).optional(),
+  minLossUsd: z.coerce.number().min(0).optional(),
+});
+
+export type IncidentsQuery = z.output<typeof incidentsQuerySchema>;
+
+export const incidentIdParamsSchema = z.object({
+  incident_id: z.string().uuid(),
+});
+
 export function parseSearchParams(
   searchParams: URLSearchParams,
 ): Record<string, string | string[]> {
