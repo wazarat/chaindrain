@@ -1,8 +1,8 @@
 # AI_CONTEXT — Chaindrain
 
-**Last updated:** 2026-05-16 — **Phase 5 DONE ✓ (code shipped; awaits user-set `RESEND_API_KEY` + `DIGEST_RECIPIENTS` in Vercel before first 09:00 UTC fire)** on top of Phase 4 + Phase 4.1. **Daily digest leg:** `/api/cron/digest` route (Bearer-auth via `CRON_SECRET`, mirrors `/api/cron/poll`), Vercel Cron at `0 9 * * *` via re-created `apps/mvp/vercel.json` (only entry — 5-min poll stays on GitHub Actions per DECISIONS §23), pure HTML+text renderer at `src/lib/email/digest.ts` with 11 new vitest cases covering subject format, 3-line-per-alert shape, critical top-5 expansion, XSS escaping, custom base URL, and zero-affected edge cases. Send-from defaults to `Chaindrain Alerts <onboarding@resend.dev>` (Resend free tier, no DNS); override via `RESEND_FROM`. Empty-window ticks return `{ ok: true, skipped: true, reason: "no_alerts" }` and do NOT send (manual `?force=1` bypasses). `pnpm typecheck/lint/build/test` (now **40 tests, +11 over phase 4.1**) all clean. **Phase 4 / 4.1 carried forward:** FAN OUT `/alerts` index + `/alerts/[alert_id]` contagion view + Method B similar exposure + KPI rewire + `<SiteHeader>` cross-page nav, all read-side queries cached via `unstable_cache` with `revalidateTag(CACHE_TAG_ALERTS|KPIS, "max")` invalidation from `/api/cron/poll` (DECISIONS §24, §25). **Production state (verified 2026-05-16 PM #9):** dashboard `/` 5/5 ✓ in 137-226 ms; all filter/sort URLs <250 ms; `chaindrain.alert` up to 3 real cron-fired alerts. **Branch URL `chaindrain-mvp-git-main-…vercel.app` is gated by Vercel Deployment Protection (SSO) by design — use `chaindrain.xyz` or `chaindrain-mvp.vercel.app`.** Next: tag `v0.1.0` once the user sets the Resend env vars in Vercel and the manual `curl -X POST` smoke returns a Resend `message_id` + the email lands in `waz@canhav.com`.
+**Last updated:** 2026-05-16 — **Phase 6 IN PROGRESS** (PM #11). Migration `20260601000000_exposure_graph.sql` applied to prod (4 new tables + 16 extended columns + grants), Drizzle re-introspected (366 lines, +9 tables), demo seeder helpers + fixtures + 24 predicates + AADAPT map + Layer 1 seeder code committed. **Layer 1 seeder NOT YET RUN — current row-by-row UPDATE pattern is too slow over the Supavisor pooler; needs rewrite to batched bulk UPSERTs in next chat.** All 4 new tables (`governance_fingerprint`, `reputation_signal`, `incident`, `similarity_pair`) currently EMPTY. Phase 5 still DONE ✓ on top of Phase 4 + 4.1. **Daily digest leg:** `/api/cron/digest` route (Bearer-auth via `CRON_SECRET`, mirrors `/api/cron/poll`), Vercel Cron at `0 9 * * *` via re-created `apps/mvp/vercel.json` (only entry — 5-min poll stays on GitHub Actions per DECISIONS §23), pure HTML+text renderer at `src/lib/email/digest.ts` with 11 new vitest cases covering subject format, 3-line-per-alert shape, critical top-5 expansion, XSS escaping, custom base URL, and zero-affected edge cases. Send-from defaults to `Chaindrain Alerts <onboarding@resend.dev>` (Resend free tier, no DNS); override via `RESEND_FROM`. Empty-window ticks return `{ ok: true, skipped: true, reason: "no_alerts" }` and do NOT send (manual `?force=1` bypasses). `pnpm typecheck/lint/build/test` (now **40 tests, +11 over phase 4.1**) all clean. **Phase 4 / 4.1 carried forward:** FAN OUT `/alerts` index + `/alerts/[alert_id]` contagion view + Method B similar exposure + KPI rewire + `<SiteHeader>` cross-page nav, all read-side queries cached via `unstable_cache` with `revalidateTag(CACHE_TAG_ALERTS|KPIS, "max")` invalidation from `/api/cron/poll` (DECISIONS §24, §25). **Production state (verified 2026-05-16 PM #9):** dashboard `/` 5/5 ✓ in 137-226 ms; all filter/sort URLs <250 ms; `chaindrain.alert` up to 3 real cron-fired alerts. **Branch URL `chaindrain-mvp-git-main-…vercel.app` is gated by Vercel Deployment Protection (SSO) by design — use `chaindrain.xyz` or `chaindrain-mvp.vercel.app`.** Next: tag `v0.1.0` once the user sets the Resend env vars in Vercel and the manual `curl -X POST` smoke returns a Resend `message_id` + the email lands in `waz@canhav.com`.
 
-> **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) → the active plan at `~/.cursor/plans/chaindrain_mvp_rebuild_5bcd46dc.plan.md`.
+> **Read order for a new AI session:** this file → [DECISIONS.md](DECISIONS.md) → [CHANGELOG_DEV.md](CHANGELOG_DEV.md) (PM #11 entry first) → `~/Downloads/chaindrain_exposure_graph_scope.md` (Phase 6 spec) → the active Phase 6 plan at `~/.cursor/plans/exposure_graph_mvp_tab_10ed4956.plan.md`.
 
 ---
 
@@ -57,6 +57,9 @@ chaindrain/
 │       ├── src/app/alerts/[alert_id]/page.tsx           ← Phase 4 — contagion view (header + affected + similar exposure)
 │       ├── src/components/{kpi-cards,filter-bar,multi-select,entities-table,entity-drawer,site-header}.tsx  ← Phase 2 UI + Phase 4 SiteHeader nav
 │       ├── src/components/{alerts-filter-bar,alerts-table,alert-header,affected-entities-table,similar-exposure-panel}.tsx  ← Phase 4 UI
+│       ├── src/lib/exposure/{predicates,aadapt_map}.ts        ← Phase 6 — 24 ROOT_CAUSE_PREDICATES + AADAPT tactic/technique maps
+│       ├── scripts/lib/{demo_rand,demo_fixtures}.ts           ← Phase 6 — deterministic RNG + static pools / weighted distributions / 24-cause spec table
+│       ├── scripts/seed_exposure_demo.ts                      ← Phase 6 — Layer 1 demo seeder (NOT YET RUN — needs batching rewrite)
 │       ├── src/lib/pollers/{types,stablecoin-depeg,oracle-deviation,bridge-pause,admin-tx,tvl-drop}.ts   ← Phase 3 — 5 pure poller fns + shared types
 │       ├── src/lib/pollers/*.test.ts                    ← Phase 3 — vitest unit tests (29 cases, all green)
 │       ├── src/workers/poll-signals.ts                  ← Phase 3 — orchestrator; tsx-runnable via `pnpm poll`; also called from cron route
@@ -79,7 +82,9 @@ chaindrain/
 │   ├── 20260516000000_drop_legacy_public.sql                      Phase 0 — drops legacy public.*
 │   ├── 20260516000100_chaindrain_schema.sql                       Phase 0 — chaindrain.* tables + view
 │   ├── 20260516000200_chaindrain_grants.sql                       Phase 0 — anon SELECT, service_role ALL
-│   └── 20260517000000_alerts.sql                                  Phase 3 — chaindrain.alert + 2 indexes + 2 CHECK constraints + grants
+│   ├── 20260516010000_mvp_master_dedup.sql                        Phase 5.1 — chaindrain.mvp_master_dedup view (parens-suffix dedup → 772 rows)
+│   ├── 20260517000000_alerts.sql                                  Phase 3 — chaindrain.alert + 2 indexes + 2 CHECK constraints + grants
+│   └── 20260601000000_exposure_graph.sql                          Phase 6 — extends identity/contract_fingerprint/dependency_fingerprint with §3.1-§3.3 cols, adds governance_fingerprint + reputation_signal + incident + similarity_pair tables, 18 indexes, grants
 ├── scripts/
 │   ├── load_seed.mjs        ← canonical 875-row JSON loader (idempotent, runs in 1.5s)
 │   ├── package.json + package-lock.json + node_modules/   ← outside the pnpm workspace
@@ -129,6 +134,11 @@ The `chaindrain_export/` bundle (in `~/Downloads/`) is the input dataset. Key fi
 | `chaindrain.tier_state` | 875 | risk_score, risk_tier (critical/high/medium/low), coverage_tier (core/monitored/archive/excluded), blast_radius_usd, state |
 | `chaindrain.mvp_master` (view) | 875 | All four joined on `entity_id` |
 | `chaindrain.alert` | 2 (live as of PM #8 first cron-fire; grows on every successful poll) | Phase 3 — alert_id pk, detected_at, signal_type (CHECK), severity (CHECK), dependency_key, dependency_field, raw_signal jsonb, fanout_count, fanout_tvl_usd. Indexes: idx_alert_detected (detected_at DESC), idx_alert_severity ((severity, detected_at DESC)). |
+| `chaindrain.mvp_master_dedup` | 772 | **Canonical post-dedup universe.** View added in `20260516010000_mvp_master_dedup.sql` (Phase 5.1) — strips parens-suffix variants, groups by `(tvl_usd, risk_score, blast_radius_usd, first_word)`, keeps the row with shortest stripped name, unions array deps across the merged dupes. Every existing query in `apps/mvp/src/lib/db/queries.ts` already targets this view. |
+| `chaindrain.governance_fingerprint` | **0** (Phase 6, PM #11) | New table — entity_id PK, governance_type, governance_token_address, treasury_size_usd, team_size_estimate, team_jurisdiction, incorporated_entity, is_anonymous_team, has_security_disclosure_policy, incident_response_sla_hours, data_confidence DEFAULT 'DEMO'. Awaits Layer 1 seeder run. |
+| `chaindrain.reputation_signal` | **0** (Phase 6, PM #11) | New table — entity_id PK, github_repo_url, github_commit_velocity_30d, github_contributor_count, github_last_security_issue_date, twitter_handle, discord_invite, last_known_incident_date, kyt_screening_status, data_confidence DEFAULT 'DEMO'. |
+| `chaindrain.incident` | **0** (Phase 6, PM #11) | The Incident Ledger — incident_id pk, victim_entity_ids uuid[] NOT NULL, event_date NOT NULL, root_cause NOT NULL (24 enum values), 16 other fields per scope §4.1, `data_confidence DEFAULT 'DEMO'`. 5 indexes (date DESC, root_cause, victims GIN, attribution, attack_layer). Awaits incident seeder. |
+| `chaindrain.similarity_pair` | **0** (Phase 6, PM #11) | Top-25 dependency twins per source entity. Composite PK `(source_entity_id, target_entity_id)` + check `source <> target` + check `rank >= 1`. Method A weighted Jaccard, Method B incident-overlap, Method C SHA-256 64-dim fake-embedding cosine, ensemble = 0.3·A + 0.4·min(1,B/5) + 0.3·C. ~19,300 rows expected (772 × 25). Awaits similarity seeder. |
 
 **Indexes (already created):** GIN on `chain_deployments`, `oracle_providers`, `bridge_dependencies`, `stablecoin_dependencies`. B-tree on `sector`, `tvl_usd DESC NULLS LAST`, `defillama_slug`, `proxy_pattern`, `upgrade_authority_type`, `audits_tier`, `admin_address`, `primary_contract_address`, `dvn_configuration`, `risk_tier`, `coverage_tier`, `risk_score DESC`, `state`.
 
@@ -260,7 +270,36 @@ Vitest setup: `vitest.config.ts` `pool: "forks"`, includes `src/**/*.test.ts`. 5
 
 **Acceptance ties to the 6th MVP done-criterion ("Daily digest email sent on schedule with non-empty content").** Once all 6 are green, tag `v0.1.0` and stop building per CURSOR_PROMPT.md.
 
-**Out of Phase 5 scope (refuse if asked):** Slack/Discord/webhook notifications (Phase 6), unsubscribe link (overkill for single-tenant), per-recipient personalization, Resend webhook event ingestion, charts/Recharts (spec says "stretch goal at most" — declined; not needed for plain HTML digest), Markdown-to-HTML library (3-line bodies don't need it), additional pollers (still capped at the 5 from Phase 3 per spec).
+**Out of Phase 5 scope (refuse if asked):** Slack/Discord/webhook notifications (deferred), unsubscribe link (overkill for single-tenant), per-recipient personalization, Resend webhook event ingestion, charts/Recharts (spec says "stretch goal at most" — declined; not needed for plain HTML digest), Markdown-to-HTML library (3-line bodies don't need it), additional pollers (still capped at the 5 from Phase 3 per spec).
+
+### Phase 6 — Exposure Graph (4th tab) — IN PROGRESS as of 2026-05-16 PM #11
+
+**Spec source of truth:** `~/Downloads/chaindrain_exposure_graph_scope.md`. The referenced `chaindrain_threat_detection_roadmap.docx` is not on disk; the scope file declares itself authoritative.
+
+**Universe:** the canonical 772 entities from `chaindrain.mvp_master_dedup` (parens-suffix dedup view added in Phase 5.1). Every Phase 6 query and seeder targets this view.
+
+**Done in PM #11:**
+- Migration `supabase/migrations/20260601000000_exposure_graph.sql` applied to prod via Supabase MCP. Adds 16 extended columns to existing tables, 4 new tables (`governance_fingerprint`, `reputation_signal`, `incident`, `similarity_pair`), 18 new indexes, and grants matching DECISIONS §14. Existing `mvp_master` and `mvp_master_dedup` views stay valid (they `SELECT` explicit columns, so adding columns to base tables doesn't invalidate them — confirmed by `mvp_master_dedup` still returning 772 post-migration).
+- Drizzle re-introspect → `apps/mvp/src/lib/db/schema.ts` regenerated to 366 lines. The new Phase 6 tables AND the previously-missed `mvp_master_dedup` view both surfaced.
+- `apps/mvp/scripts/lib/demo_rand.ts` — `seedFromEntityId` + `mulberry32` + `pick`/`pickN`/`weighted` + `intInRange` + `sha256Hex` + `deterministicAddress` + `deterministicTxHash` + `slugify` + `triangularDate` + `logNormalLoss`. All pure / deterministic / I/O-free.
+- `apps/mvp/scripts/lib/demo_fixtures.ts` — every static pool, weighted distribution, and the `RootCause` 24-string-literal union + `ROOT_CAUSE_SPECS` table whose `count` fields sum to 356 (matches scope §4.1).
+- `apps/mvp/src/lib/exposure/predicates.ts` — `ROOT_CAUSE_PREDICATES` with all 24 entries (one predicate function per root_cause, total over a typed `PredicateEntity` interface) + `matchingRootCauses(e)` runtime helper.
+- `apps/mvp/src/lib/exposure/aadapt_map.ts` — `AADAPT_TACTIC_MAP` + `AADAPT_TECHNIQUE_MAP` keyed by root_cause; values prefixed `DEMO:AADAPT.…` so the UI renders the demo chip.
+- `apps/mvp/scripts/seed_exposure_demo.ts` — Layer 1 seeder code. **Type-checks but NOT yet run successfully** (see "Pending" below).
+- `apps/mvp/package.json` — added 4 scripts: `seed:exposure-layer1`, `seed:exposure-incidents`, `seed:exposure-similarity`, chained `seed:exposure`.
+
+**Pending (priority for next chat):**
+1. **Rewrite `seed_exposure_demo.ts` for batched bulk UPSERTs** before re-running. Current row-by-row UPDATE × 5 round-trips × 772 entities = ~3,860 round-trips over the Supavisor pooler — first run was killed at 226s. Switch to batches of ~100 with `INSERT … SELECT … FROM unnest($1::uuid[], …)` or the `sql(rows, ...cols)` builder pattern from `scripts/load_seed.mjs`. Per-column confidence gating logic (`CASE WHEN existing_confidence IN ('HIGH','MEDIUM','INFERRED') THEN existing ELSE EXCLUDED.x END`) MUST be preserved.
+2. **Write + run `seed_incidents_demo.ts`** — 356 rows across 24 root_causes, victim selection conditioned on `ROOT_CAUSE_PREDICATES[rc]` (so Method B has signal). Triangular date density peaked at 2024-06. Backfill `reputation_signal.last_known_incident_date = MAX(event_date)` per victim.
+3. **Write + run `seed_similarity.ts`** — Method A weighted Jaccard (10 attributes per scope §5.1), Method B vulnerability-class overlap, Method C deterministic SHA-256 64-dim fake-embedding cosine. Ensemble = `0.3·A + 0.4·min(1, B/5) + 0.3·C`. Persist top-25 per source (~19,300 rows).
+4. **Query layer extensions** in `apps/mvp/src/lib/db/queries.ts` — `listExposureEntities`, `getExposureEntity`, `getThreatHistory`, `getPeerIncidents`, `getDependencyTwins`, `listIncidents`, `getIncidentById`, `getExposureKpis`. All wrapped in `unstable_cache` with new tag constants per DECISIONS §25.
+5. **API routes** — `/api/exposure/twins/[entity_id]` and `/api/exposure/peers/[entity_id]`.
+6. **UI primitives** — `<DemoChip />` (scope §6.4), `<DemoBanner />` (verbatim copy from scope §0), exposure panels, exposure-table, incidents-table.
+7. **Pages** — `/exposure`, `/exposure/[entity_id]`, `/exposure/incidents`, `/exposure/incidents/[incident_id]`. All include `<SiteHeader active="exposure" />` + persistent demo banner.
+8. **Site header** — widen `active` union to include `"exposure"` and add the Exposure Graph nav with the Hydra-Teal `Preview` pill.
+9. **Methodology page** — append "Exposure Graph & Similarity Engine" section with Methods A/B/C, weights (0.3/0.4/0.3), worked example, "what is synthetic today" callout.
+10. **Tests** — predicates (24), seeder determinism, Jaccard math, ensemble math.
+11. **DECISIONS.md** — append §27 (universe = `mvp_master_dedup`, demo seeders confidence-gated, real data wins) + §28 (Method C deterministic SHA-256 fake-embedding upgrade path).
 
 ---
 

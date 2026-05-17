@@ -368,3 +368,37 @@ The smoke run on the live DB confirmed the design: for a synthetic USDC depeg al
 **Future migration to `'use cache'` (Phase 6+)**: when the rest of the codebase migrates from `unstable_cache` to the Next 16 `'use cache'` directive (per DECISIONS §25), the digest route stays unchanged — it never used the `*Cached` variants in the first place.
 
 **See:** `apps/mvp/src/app/api/cron/digest/route.ts`, `apps/mvp/src/lib/email/digest.ts`, `apps/mvp/vercel.json`, `apps/mvp/.env.local.example`, `docs/CHANGELOG_DEV.md` 2026-05-16 PM #10 entry, `~/Downloads/chaindrain_export/CURSOR_PROMPT.md` "PHASE 5" section.
+
+---
+
+## 27. Phase 6 universe selector + demo-seeder confidence-gating policy
+
+**Decision (2026-05-16, Phase 6 PM #11):** the canonical Phase 6 entity universe is `chaindrain.mvp_master_dedup` (= 772 rows), the parens-suffix dedup view added in `20260516010000_mvp_master_dedup.sql`. Every Phase 6 query, seeder, and `getExposureKpis()` reads from this single view. Phase 6 demo seeders (`seed_exposure_demo.ts`, `seed_incidents_demo.ts`, `seed_similarity.ts`) are deterministic per `entity_id` (via `mulberry32(seedFromEntityId(uuid))`) and **never overwrite rows whose existing confidence is `HIGH` / `MEDIUM` / `INFERRED`**. The four-level precedence is `DEMO < INFERRED < MEDIUM < HIGH`. New permitted confidence value: `'DEMO'`.
+
+**Rationale:**
+- The user's own framing ("772 entities after removing the duplicates") matches `mvp_master_dedup.COUNT() = 772` exactly; nothing else in the existing schema natively yields 772 (`coverage_tier IN ('core','monitored')` = 165, `defillama_slug` dedup keeping all no-slug rows = 781, parens-stripping + slug dedup = 748, etc). The dedup view existed but was undocumented in AI_CONTEXT — Phase 6 PM #11 surfaces it as the canonical universe.
+- Confidence gating is non-negotiable. The investor demo MUST not have its risk-tier scores or any other real production data overwritten by synthetic values. The `'DEMO'` confidence label gives the UI a deterministic signal to render the `<DemoChip />` next to every synthetic field — visibly distinguishing what's seed truth from what's product preview.
+- For the new `governance_fingerprint` and `reputation_signal` tables, confidence is a single `data_confidence text DEFAULT 'DEMO'` column (whole-row gate). For `dependency_fingerprint` the existing per-column `*_confidence` convention is preserved and extended to the 8 new §3.3 fields. For `incident` rows, `data_confidence text NOT NULL DEFAULT 'DEMO'` — Phase 2a will switch to `'MEDIUM'` when ingesting from DefiLlama Hacks / Rekt / SlowMist.
+- The `mvp_master` and `mvp_master_dedup` views are NOT recreated in the Phase 6 migration. Both views use explicit column lists (no `SELECT *`), so adding columns to base tables doesn't invalidate them. Confirmed post-migration: `mvp_master_dedup` still returns 772 rows. The new extended columns (`subsector_tags`, `custodian`, etc.) are accessed via direct base-table joins in `getExposureEntity()` queries, not through the view — keeping the view lean and avoiding a recreation step that would briefly drop the dependent queries.
+
+**Performance gotcha learned in PM #11:** the first draft of `seed_exposure_demo.ts` did 5 sequential `await sql\`UPDATE … WHERE entity_id = …\`` round-trips per entity × 772 entities ≈ 3,860 round-trips over the Supavisor transaction-mode pooler (port 6543). Even at 50ms RTT that's ~3 minutes minimum, and the pooler queues / sleeps under that burst pattern. **The next chat MUST rewrite the seeder to do batched bulk UPSERTs** — one round trip per table for all 772 rows, either via `INSERT … SELECT … FROM unnest($1::uuid[], $2::text[][], …)` or via the postgres-js `sql(rows, …columns)` builder pattern from `scripts/load_seed.mjs` (which loads 875 rows in 1.5s). The same batching applies to `seed_incidents_demo.ts` (~356 rows) and `seed_similarity.ts` (~19,300 rows). Per-column confidence gating logic stays the same — just lifted from per-row to per-batch via `CASE WHEN existing_confidence IN ('HIGH','MEDIUM','INFERRED') THEN existing ELSE EXCLUDED.x END` in the `ON CONFLICT DO UPDATE` clause.
+
+**See:** `supabase/migrations/20260601000000_exposure_graph.sql`, `apps/mvp/scripts/seed_exposure_demo.ts` (current draft — needs perf rewrite), `apps/mvp/scripts/lib/demo_rand.ts`, `apps/mvp/scripts/lib/demo_fixtures.ts`, `~/Downloads/chaindrain_exposure_graph_scope.md` §3.
+
+---
+
+## 28. Method C similarity = deterministic SHA-256 64-dim "fake embedding", upgrade path to real OpenAI in Phase 3c
+
+**Decision (2026-05-16, Phase 6 PM #11):** the Phase 6 similarity engine's Method C ("Embedding cosine") uses a **deterministic 64-dimensional vector derived from per-attribute SHA-256 hashes** rather than a real text-embedding model. For each entity, every `(attribute_key, attribute_value)` pair is hashed; each byte of the hash contributes to one of 64 buckets (`(byte - 127.5) / 127.5`), then the resulting vector is L2-normalized. Cosine similarity over the resulting unit vectors is clamped to `[0, 1]` via `(x + 1) / 2`. The ensemble score is `0.3 · methodA + 0.4 · min(1, methodB / 5) + 0.3 · methodC`.
+
+**Rationale:**
+- Scope §5.3 explicitly defers real embeddings to Phase 3c ("Make sure the UI labels Method C results as 'Embedding similarity (synthetic) — Phase 3c will replace with real OpenAI embeddings.'"). Investors get a stable, attribute-aware signal that *looks like* what a `text-embedding-3-large` output would shape into, without paying for or operating an embedding API yet.
+- Determinism is a hard requirement: the demo must produce the same twins for the same entity across rebuilds (investor reload test). `Math.random()` would break this; SHA-256 of stable input strings does not. Same `mulberry32` discipline as the Layer 1 + incident seeders.
+- The 64-dim choice is sized to mirror the cosine-similarity behavior of low-dim embeddings while keeping the per-source scoring loop O(64 × 772) ≈ 50K ops — fast enough to run all 772-source × 772-target pairs in milliseconds when batched.
+- The seam stays at the function level: Phase 3c replaces the `fakeEmbed(entity_id, attributes)` function body with a real embedding call (cached per-entity for cost) and recomputes `similarity_pair`. The `0.3 / 0.4 / 0.3` ensemble weights and the `min(1, B/5)` Method-B normalization are independent of the Method C source.
+
+**Implementation seams worth knowing:**
+- `apps/mvp/scripts/seed_similarity.ts` (to be written) is the only place the Method C math lives. The output table `chaindrain.similarity_pair.method_c_cosine` is just the persisted result.
+- The `shared_attributes` jsonb column on `similarity_pair` records which attribute sets contributed to the score (e.g. `{audit_firms: ["Halborn"], oracle_providers: ["chainlink"], method_b_root_causes: ["oracle_manipulation"]}`) — this drives the "Matches on:" copy in the dependency-twins panel cards (scope §6.2 panel 3). The Method C vector itself is not persisted (it's derived on-demand for any future re-rank).
+
+**See:** `~/Downloads/chaindrain_exposure_graph_scope.md` §5.3 + §5.4 + §5.5, `apps/mvp/scripts/seed_similarity.ts` (TBD), `apps/mvp/src/lib/db/schema.ts` (`similarity_pairInChaindrain`).
